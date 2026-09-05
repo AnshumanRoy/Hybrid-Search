@@ -1,0 +1,22 @@
+{
+  "questions": [
+    {
+      "question": "What is Acme's refund window for physical products?",
+      "expected_answer": "Customers may request a full refund within 30 days of purchase for unused products in original packaging.",
+      "relevant_terms": ["refund", "30 days", "original packaging"],
+      "relevant_docs": ["acme_handbook.txt"]
+    },
+    {
+      "question": "Are digital downloads refundable?",
+      "expected_answer": "Digital downloads and online courses are non-refundable once the license key or access link has been delivered, except for defective products.",
+      "relevant_terms": ["digital", "non-refundable", "license key"],
+      "relevant_docs": ["acme_handbook.txt"]
+    },
+    {
+      "question": "How long do employees accrue paid annual leave?",
+      "expected_answer": "Full-time employees accrue 15 days of paid annual leave per calendar year.",
+      "relevant_terms": ["leave", "15 days", "annual"],
+      "relevant_docs": ["acme_handbook.txt"]
+    }
+  ]
+}

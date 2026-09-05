@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+env/
+.git/
+.gitignore
+data/vectorstore
+data/rag.db
+*.db
+.env
+tests/
+scripts/.venv
+docs/images/

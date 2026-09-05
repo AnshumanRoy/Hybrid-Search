@@ -1,0 +1,1 @@
+"""Common helpers shared across layers (batching, validation, timing)."""

@@ -1,0 +1,1 @@
+"""Infrastructure package — concrete framework-based implementations."""
