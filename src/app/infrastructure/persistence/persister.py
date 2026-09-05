@@ -36,6 +36,7 @@ class IndexPersister:
         document: ParsedDocument,
         embedded_chunks: list[EmbeddedChunk],
         status: str = "indexed",
+        owner_id: str | None = None,
     ) -> None:
         now = datetime.now(timezone.utc)
         self.repository.upsert_document(
@@ -50,6 +51,7 @@ class IndexPersister:
                 status=status,
                 created_at=document.created_at,
                 updated_at=now,
+                owner_id=owner_id,
             )
         )
         self.repository.add_chunks([ec.chunk for ec in embedded_chunks])
@@ -60,10 +62,11 @@ class IndexPersister:
         self,
         document: ParsedDocument,
         embedded_chunks: list[EmbeddedChunk],
+        owner_id: str | None = None,
     ) -> None:
         logger.debug("replacing document document_id=%s", document.document_id)
         self._clear_document(document.document_id)
-        self.persist_document(document, embedded_chunks, status="indexed")
+        self.persist_document(document, embedded_chunks, status="indexed", owner_id=owner_id)
 
     def delete_document(self, document_id: str) -> None:
         self._clear_document(document_id)

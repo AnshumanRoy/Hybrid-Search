@@ -1,4 +1,21 @@
 services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: hybrid-search-pg
+    environment:
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag
+      POSTGRES_DB: rag
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d rag"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   api:
     build: .
     container_name: hybrid-search-api
@@ -8,7 +25,18 @@ services:
       - LLM_PROVIDER=echo
       - RERANKER_ENABLED=true
       - HF_HUB_OFFLINE=0
+      - VECTOR_STORE_BACKEND=pgvector
+      - DATABASE_URL=postgresql+psycopg://rag:rag@postgres:5432/rag
       - DATA_DIR=/app/data
+      - AUTH_SECRET_KEY=dev-only-change-me
     volumes:
       - ./data:/app/data
+      - hf-cache:/root/.cache/huggingface
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  pgdata:
+  hf-cache:

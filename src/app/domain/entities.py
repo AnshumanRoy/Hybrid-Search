@@ -7,6 +7,7 @@ infrastructure never leaks into the domain.
 
 from __future__ import annotations
 
+import enum
 import time
 import uuid
 from datetime import datetime, timezone
@@ -21,6 +22,31 @@ def _new_id() -> str:
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class SharingPermission(str, enum.Enum):
+    """Permission level granted to a share recipient."""
+
+    VIEWER = "viewer"
+    EDITOR = "editor"
+
+
+class User(BaseModel):
+    """An authenticated principal who owns documents and shares them."""
+
+    user_id: str = Field(default_factory=_new_id)
+    email: str
+    display_name: str | None = None
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class ShareRecord(BaseModel):
+    """A document shared with another user (viewer or editor)."""
+
+    document_id: str
+    shared_with_email: str
+    permission: SharingPermission
+    created_at: datetime = Field(default_factory=utcnow)
 
 
 class PageRange(BaseModel):
@@ -153,7 +179,11 @@ class Citation(BaseModel):
 
 
 class DocumentRecord(BaseModel):
-    """Persisted record for a document (as stored in the SQL repository)."""
+    """Persisted record for a document (as stored in the SQL repository).
+
+    ``owner_id`` is the user_id of the creator; ``None`` means the document is
+    public (readable by any authenticated user, editable by nobody).
+    """
 
     document_id: str
     filename: str
@@ -165,6 +195,7 @@ class DocumentRecord(BaseModel):
     status: str = "indexed"
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
+    owner_id: str | None = None
 
 
 class ChunkRecord(BaseModel):
@@ -222,6 +253,18 @@ class RAGResponse(BaseModel):
         return True
 
 
+class DocumentAccess(BaseModel):
+    """A document together with the caller's effective permission."""
+
+    document: DocumentRecord
+    permission: SharingPermission
+    shared: bool = False
+
+    @property
+    def document_id(self) -> str:
+        return self.document.document_id
+
+
 class EvaluationSample(BaseModel):
     question: str
     expected_answer: str | None = None
@@ -254,11 +297,15 @@ __all__ = [
     "RetrievedChunk",
     "Citation",
     "DocumentRecord",
+    "DocumentAccess",
     "ChunkRecord",
     "QueryRecord",
     "RAGResponse",
     "EvaluationSample",
     "IngestionResult",
     "EmbeddingInfo",
+    "SharingPermission",
+    "User",
+    "ShareRecord",
     "utcnow",
 ]

@@ -17,8 +17,11 @@ from app.application.services import (
     RAGService,
     RetrievalService,
 )
+from app.application.services.auth_service import AuthService
+from app.application.services.document_service import DocumentService
 from app.common.cache import InMemoryCache
 from app.common.configuration.settings import Settings
+from app.common.configuration.settings import LLMProvider, VectorStoreBackend
 from app.common.file_sources import LocalFileSource
 from app.common.logging import setup_logging
 from app.domain.exceptions import ConfigurationError
@@ -33,11 +36,12 @@ from app.infrastructure.llm.ollama import OllamaLLM
 from app.infrastructure.persistence.database import Database
 from app.infrastructure.persistence.persister import IndexPersister
 from app.infrastructure.persistence.repositories.sqlalchemy_repository import SQLAlchemyDocumentRepository
+from app.infrastructure.persistence.repositories.sqlalchemy_user_repository import SQLAlchemyUserRepository
 from app.infrastructure.rerankers.cross_encoder import CrossEncoderReranker
 from app.infrastructure.retrievers.bm25 import BM25Retriever
 from app.infrastructure.retrievers.hybrid import HybridRetriever
 from app.infrastructure.vector_stores.chroma import ChromaVectorStore
-from app.common.configuration.settings import LLMProvider
+from app.infrastructure.vector_stores.pgvector import PgVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +54,7 @@ class Container:
     embedder: object
     database: Database
     repository: SQLAlchemyDocumentRepository
+    users: SQLAlchemyUserRepository
     vector_store: object
     lexical: BM25Retriever
     persister: IndexPersister
@@ -61,6 +66,8 @@ class Container:
     llm_service: LLMService
     rag_service: RAGService
     ingestion_service: IngestionService
+    auth_service: AuthService
+    document_service: DocumentService
     source: LocalFileSource
 
 
@@ -78,8 +85,9 @@ def build_container(
     # --- Infrastructure ---
     database = Database.from_settings(settings)
     repository = SQLAlchemyDocumentRepository(database.session_factory)
+    users = SQLAlchemyUserRepository(database.session_factory)
 
-    vector_store = vector_store or ChromaVectorStore.from_settings(settings)
+    vector_store = vector_store or _build_vector_store(settings, database)
 
     if embedder is None:
         embedder = SentenceTransformerEmbedder(
@@ -139,6 +147,10 @@ def build_container(
     source = LocalFileSource(settings.resolve_data_dir(), extensions=settings.allowed_extensions)
     ingestion_service = IngestionService(source, parser, chunker, embedder, persister, settings)
 
+    # --- Auth & document access ---
+    auth_service = AuthService(users, settings)
+    document_service = DocumentService(ingestion_service, repository, users)
+
     return Container(
         settings=settings,
         parser=parser,
@@ -146,6 +158,7 @@ def build_container(
         embedder=embedder,
         database=database,
         repository=repository,
+        users=users,
         vector_store=vector_store,
         lexical=lexical,
         persister=persister,
@@ -157,8 +170,26 @@ def build_container(
         llm_service=llm_service,
         rag_service=rag_service,
         ingestion_service=ingestion_service,
+        auth_service=auth_service,
+        document_service=document_service,
         source=source,
     )
+
+
+def _build_vector_store(settings: Settings, database: Database):
+    if settings.vector_store_backend == VectorStoreBackend.CHROMA:
+        return ChromaVectorStore.from_settings(settings)
+
+    if settings.vector_store_backend == VectorStoreBackend.PGVECTOR:
+        if settings.database_url.startswith("sqlite"):
+            raise ConfigurationError(
+                "VECTOR_STORE_BACKEND=pgvector requires a PostgreSQL DATABASE_URL "
+                "(e.g. postgresql+psycopg://user:pass@host:5432/db). "
+                "See docker-compose.yml for a ready-to-run pgvector service."
+            )
+        return PgVectorStore.from_settings(settings, database.engine)
+
+    raise ValueError(f"unknown vector store backend: {settings.vector_store_backend}")
 
 
 def _resolve_device(preferred: str) -> str:

@@ -40,12 +40,26 @@ class RAGService:
         max_context_chars: int | None = None,
         filters: SearchFilters | None = None,
         query_id: str | None = None,
+        accessible_document_ids: set[str] | None = None,
     ) -> RAGResponse:
         qid = query_id or uuid.uuid4().hex
         overall_started = time.perf_counter()
 
+        # Access control is pushed down into retrieval (both vector + lexical
+        # indexes are filtered before fusion/reranking); the post-filter below
+        # remains as a defense-in-depth safety net against a buggy store filter.
+        retrieval_filters = filters
+        if accessible_document_ids is not None:
+            allowed = list(accessible_document_ids)
+            if retrieval_filters is None:
+                retrieval_filters = SearchFilters(document_ids=allowed)
+            else:
+                retrieval_filters = retrieval_filters.model_copy(update={"document_ids": allowed})
+
         retrieval_started = time.perf_counter()
-        chunks = self.retrieval.retrieve(query, top_k=top_k, filters=filters, query_id=qid)
+        chunks = self.retrieval.retrieve(query, top_k=top_k, filters=retrieval_filters, query_id=qid)
+        if accessible_document_ids is not None:
+            chunks = [c for c in chunks if c.document_id in accessible_document_ids]
         retrieval_ms = (time.perf_counter() - retrieval_started) * 1000
 
         context = self.context_builder.build(chunks, max_chars=max_context_chars)

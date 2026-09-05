@@ -2,6 +2,7 @@
 
 import pytest
 
+from app.domain.value_objects import SearchFilters
 from app.infrastructure.retrievers.bm25 import BM25Retriever, tokenize
 from tests.fakes import make_chunk
 
@@ -54,6 +55,28 @@ def test_count() -> None:
 
 def test_tokenize_lowercases_and_strips_punct() -> None:
     assert tokenize("Refund, policy!") == ["refund", "policy"]
+
+
+def test_retrieve_filters_by_document_ids() -> None:
+    retriever = BM25Retriever()
+    retriever.add_documents(
+        [
+            make_chunk(document_id="doc_b", chunk_id="b1", text="refund policy refund policy refund policy refund policy"),
+            make_chunk(document_id="doc_a", chunk_id="a1", text="refund policy allows returns within 30 days"),
+            make_chunk(document_id="doc_a", chunk_id="a2", text="cancellation refunded to original payment method"),
+        ]
+    )
+
+    # Unfiltered: the doc_b chunk ranks first (repeated query terms).
+    unfiltered = retriever.retrieve("refund policy", top_k=5)
+    assert unfiltered[0].chunk_id == "b1"
+
+    # Filtered: disallowed chunks are skipped before the top_k cut, so the best
+    # allowed chunk is still found even when it ranks below restricted content.
+    allowed = retriever.retrieve("refund policy", top_k=1, filters=SearchFilters(document_ids=["doc_a"]))
+    assert len(allowed) == 1
+    assert allowed[0].chunk_id == "a1"
+    assert allowed[0].document_id == "doc_a"
 
 
 def test_relevance_token_query_returns_zero() -> None:

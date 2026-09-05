@@ -99,6 +99,8 @@ class FakeVectorStore:
 
 
 def _matches_filters(ec: EmbeddedChunk, query: VectorQuery) -> bool:
+    if query.filters.document_ids is not None and ec.chunk.document_id not in query.filters.document_ids:
+        return False
     for key, value in query.filters.exact.items():
         if ec.chunk.metadata.get(key) != value:
             return False

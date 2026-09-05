@@ -24,10 +24,53 @@ class DocumentRow(Base):
     status: Mapped[str] = mapped_column(String(16), default="indexed")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    owner_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
+    owner: Mapped["UserRow | None"] = relationship(back_populates="documents")
     chunks: Mapped[list["ChunkRow"]] = relationship(
         back_populates="document", cascade="all, delete-orphan", passive_deletes=True
     )
+    shares: Mapped[list["ShareRow"]] = relationship(
+        back_populates="document", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class UserRow(Base):
+    __tablename__ = "users"
+
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(512))
+    display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    documents: Mapped[list["DocumentRow"]] = relationship(back_populates="owner")
+    shares: Mapped[list["ShareRow"]] = relationship(back_populates="user")
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<UserRow id={self.user_id} email={self.email}>"
+
+
+class ShareRow(Base):
+    __tablename__ = "document_shares"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("documents.document_id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.user_id", ondelete="CASCADE"), index=True)
+    permission: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    document: Mapped[DocumentRow] = relationship(back_populates="shares")
+    user: Mapped[UserRow] = relationship(back_populates="shares")
+
+    __table_args__ = (__import__("sqlalchemy").UniqueConstraint("document_id", "user_id"),)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<ShareRow doc={self.document_id} user={self.user_id} perm={self.permission}>"
 
 
 class ChunkRow(Base):
@@ -69,7 +112,25 @@ class QueryLogRow(Base):
 
 
 def init_db(engine) -> None:
+    """Create all tables and apply lightweight schema upgrades.
+
+    ``Base.metadata.create_all`` never alters existing tables, so schema
+    additions (e.g. ``documents.owner_id``) are applied with portable
+    ``ALTER TABLE`` statements for databases created before the change.
+    """
     Base.metadata.create_all(engine)
+    _upgrade_documents_owner_id(engine)
+
+
+def _upgrade_documents_owner_id(engine) -> None:
+    from sqlalchemy import inspect, text
+
+    columns = {c["name"] for c in inspect(engine).get_columns("documents")}
+    if "owner_id" in columns:
+        return
+    with engine.begin() as conn:
+        # Plain nullable column (no FK) so both sqlite and postgres accept it.
+        conn.execute(text("ALTER TABLE documents ADD COLUMN owner_id VARCHAR(64)"))
 
 
 def session_factory_for(engine) -> sessionmaker:
@@ -88,4 +149,14 @@ def make_engine(database_url: str, *, in_memory: bool = False, echo: bool = Fals
     return create_engine(database_url, connect_args=connect_args, echo=echo, future=True)
 
 
-__all__ = ["Base", "DocumentRow", "ChunkRow", "QueryLogRow", "init_db", "session_factory_for", "make_engine"]
+__all__ = [
+    "Base",
+    "DocumentRow",
+    "ChunkRow",
+    "QueryLogRow",
+    "UserRow",
+    "ShareRow",
+    "init_db",
+    "session_factory_for",
+    "make_engine",
+]

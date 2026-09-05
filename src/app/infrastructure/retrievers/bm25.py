@@ -11,6 +11,7 @@ import re
 from collections.abc import Sequence
 
 from app.domain.entities import Chunk, RetrievedChunk
+from app.domain.value_objects import SearchFilters
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,13 @@ class BM25Retriever:
     def count(self) -> int:
         return len(self._chunks)
 
-    def retrieve(self, query: str, top_k: int) -> list[RetrievedChunk]:
+    def retrieve(
+        self,
+        query: str,
+        top_k: int,
+        *,
+        filters: SearchFilters | None = None,
+    ) -> list[RetrievedChunk]:
         if not self._chunks or not query.strip():
             return []
 
@@ -60,12 +67,18 @@ class BM25Retriever:
             self._index = BM25Okapi(tokenized_corpus, k1=self._k1, b=self._b)
             self._index_pipeline = tokenized_corpus
 
+        allowed = filters.document_ids if filters and filters.document_ids is not None else None
+
         scores = self._index.get_scores(tokenize(query))
         ranked = sorted(range(len(self._corpus)), key=lambda i: scores[i], reverse=True)
 
         results: list[RetrievedChunk] = []
-        for rank_index in ranked[:top_k]:
+        for rank_index in ranked:
+            if len(results) >= top_k:
+                break
             chunk = self._corpus[rank_index]
+            if allowed is not None and chunk.document_id not in allowed:
+                continue
             results.append(
                 RetrievedChunk(
                     chunk_id=chunk.chunk_id,

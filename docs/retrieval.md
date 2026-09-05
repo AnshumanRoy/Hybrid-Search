@@ -8,7 +8,7 @@ prompt construction, and how citations are produced.
 ```
 user query
    └─ RetrievalService.retrieve(query, top_k)
-        ├─ HybridRetriever:  semantic (Chroma)  +  lexical (BM25)   → deep-candidate set
+        ├─ HybridRetriever:  semantic (Chroma or pgvector)  +  lexical (BM25)   → deep-candidate set
         ├─ fusion            RRF (default) or weighted merge
         └─ Reranker          cross-encoder scores the top candidates → final top_k
    └─ ContextBuilder.build(chunks, max_chars)  → context blocks + citations
@@ -20,7 +20,9 @@ user query
 `HybridRetriever` runs two independent searches for the same query:
 
 - **Semantic** — the query is embedded with the same model used at ingestion and searched against
-  Chroma (cosine). Hits are `EmbeddedChunk` records carrying a similarity score.
+  the configured vector store: **Chroma** (default, cosine) or **PostgreSQL/pgvector**
+  (HNSW index over `embedding vector_cosine_ops`, distance `<=>`). Both stores return cosine
+  similarity as `semantic_score`, keyed by chunk id, so the rest of the chain is store-agnostic.
 - **Lexical** — BM25 over the tokenized corpus (`rank_bm25`, fitted per process). Hits are chunks
   ranked by BM25 score.
 
@@ -46,11 +48,17 @@ The merger is pluggable and shared between tests and runtime
 
 `SearchFilters` (`SearchFilters` value object) supports:
 
-- `exclude_document_ids` — drop chunks from specific documents (applied as `must_not` in Chroma,
-  and post-filtered in the merge for the lexical branch);
-- `document_ids` — restrict to exact documents (`$eq`);
-- `limit_per_document` — **declared but currently unimplemented** in the Chroma search path;
+- `document_ids` — restrict to chunks from exactly these documents. Pushed down **before
+  fusion**: applied as `$in` on `document_id` in Chroma, `document_id IN (...)` in pgvector,
+  and as a pre-`top_k` skip in the BM25 lexical branch. Used by the query endpoint for
+  per-user access control; restricted documents are never fused or reranked.
+- `exact` / `must_not` — chunk-metadata equality / exclusion filters (`$eq` / `$ne` in
+  Chroma; `metadata_json[key]` predicates in pgvector).
+- `limit_per_document` — **declared but currently unimplemented** in the search path;
   today `top_k` is global.
+
+`RAGService` still re-checks the returned chunks against the allowed document ids as a
+defense-in-depth safety net.
 
 ## Reranking
 

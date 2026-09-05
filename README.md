@@ -7,10 +7,12 @@ answers backed by **hybrid retrieval** (dense embeddings + BM25 lexical) with op
 a CLI, and Docker packaging.
 
 ```
-documents → parse → chunk → embed → SQLite + Chroma + BM25
+documents → parse → chunk → embed → SQL store + vector store + BM25
                                       ↓
  query ─→ hybrid retrieval ─→ rerank ─→ context/prompt ─→ LLM ─→ answer + citations
 ```
+
+Most API endpoints require a user account (see [access control](docs/access_control.md)).
 
 ---
 
@@ -22,15 +24,20 @@ documents → parse → chunk → embed → SQLite + Chroma + BM25
   with strict size/extension guards and watch-for-traversal file sources.
 - **Sentence-aware chunking** — configurable window and overlap so sentence context is never
   sliced mid-sentence.
-- **Three-way index** — SQLite (SQLAlchemy) for document/chunk metadata, Chroma for dense vectors,
-  BM25 for lexical scoring. Ingest is **idempotent and incremental** via content hashes: unchanged
-  files are skipped, changed files are re-indexed atomically.
+- **Three-way index** — SQLite/PostgreSQL (SQLAlchemy) for document/chunk metadata, a vector
+  store for dense embeddings (**Chroma by default, or PostgreSQL + pgvector**), and BM25 for
+  lexical scoring. Ingest is **idempotent and incremental** via content hashes: unchanged files
+  are skipped, changed files are re-indexed atomically.
 - **Hybrid retrieval** — merge semantic + BM25 scores with configurable **RRF** (default) or
-  **weighted** fusion; optional `cross-encoder/ms-marco-MiniLM-L-6-v2` reranker.
+  **weighted** fusion; optional `cross-encoder/ms-marco-MiniLM-L-6-v2` reranker. The semantic leg
+  runs on Chroma (default) or PostgreSQL/pgvector (HNSW cosine index).
 - **Grounded generation** — context assembly with explicit citations (filename, page, chunk),
   deterministic prompt templates that treat retrieved context as *untrusted*.
+- **Multi-user documents** — user accounts (password hashing + signed bearer tokens, stdlib),
+  per-document ownership, **viewer/editor sharing**, document-level CRUD, and query scoping
+  so answers only cite documents you can see.
 - **Evaluation harness** — retrieval metrics (recall/precision@K, MRR, nDCG) plus generation
-  metrics (faithfulness, answer/context relevance). 96 tests included (unit + integration).
+  metrics (faithfulness, answer/context relevance). 131 tests included (unit + integration).
 - **API + CLI** — FastAPI (`/health`, `/query`, `/documents/ingest*`, `/documents`) and a CLI for
   `ingest`, `query`, and `evaluate`.
 - **Fail-soft design** — missing/offline reranker, LLM, or embedding model degrades gracefully
@@ -40,7 +47,7 @@ documents → parse → chunk → embed → SQLite + Chroma + BM25
 
 ## Quickstart
 
-> Python 3.10+ required. On Windows use the provided venv: `env\Scripts\python.exe`.
+> Python 3.12+ required. On Windows use the provided venv: `env\Scripts\python.exe`.
 
 ```bash
 # 1. Install
@@ -87,15 +94,27 @@ export RERANKER_ENABLED=false
 
 ## API
 
+All endpoints except `/health`, `/auth/register`, and `/auth/login` require
+`Authorization: Bearer <token>` (including `/auth/me`).
+
 | Method | Path | Body | Response |
 | --- | --- | --- | --- |
-| GET | `/health` | — | `{status, model, document_count}` |
-| POST | `/query` | `{"query", "top_k"}` | `{answer, citations[], metadata{query_id, retrieval_ms, generation_ms}}` |
+| GET | `/health` | — | `{status, vector_store{count, backend, ...}, services{...}}` |
+| POST | `/auth/register` | `{"email","password","display_name"?}` | `{token, user}` |
+| POST | `/auth/login` | `{"email","password"}` | `{token, user}` |
+| GET | `/auth/me` | — | `{user_id, email, display_name, created_at}` |
+| POST | `/query` | `{"query", "top_k"}` | `{answer, citations[], retrieved_chunks[], metadata{query_id, retrieval_ms, generation_ms}}` |
 | POST | `/documents/ingest` | multipart `file` | `list[{document_id, filename, status, chunks_embedded, error, duration_ms}]` |
-| POST | `/documents/ingest-dir` | `{"path"}` | same as above (server-side directory ingest) |
-| GET | `/documents` | — | `list[{document_id, filename, status, pages, chunks, ingested_at, content_hash}]` |
+| POST | `/documents/ingest-dir` | — | same as above (server-side directory ingest, owned by caller) |
+| GET | `/documents` | — | `list[{..., permission:"owner"\|"editor"\|"viewer", shared, owner_email}]` (your scope only) |
+| GET | `/documents/{id}` | — | single document with your permission |
+| PUT | `/documents/{id}` | multipart `file` | re-index (owner or editor); keeps id + shares |
+| DELETE | `/documents/{id}` | — | delete (owner only) |
+| POST | `/documents/{id}/share` | `{"user_email","permission":"viewer"\|"editor"}` | grant access (owner only) |
+| GET | `/documents/{id}/shares` | — | list shares (owner only) |
+| DELETE | `/documents/{id}/share/{email}` | — | revoke access (owner only) |
 
-Interactive docs at `/docs` (Swagger UI).
+Interactive docs at `/docs` (Swagger UI). Full details in [docs/access_control.md](docs/access_control.md).
 
 ---
 
@@ -106,6 +125,8 @@ Settings are typed via pydantic-settings and read from `.env` / environment vari
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
+| `VECTOR_STORE_BACKEND` | `chroma` | `chroma` (local directory) or `pgvector` (PostgreSQL — requires `DATABASE_URL` to be a Postgres URL) |
+| `DATABASE_URL` | `sqlite:///.../rag.db` | Document store; with pgvector this also holds the vectors |
 | `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Sentence-transformers model (dimension 384) |
 | `EMBEDDING_DEVICE` | `auto` | `auto` / `cpu` / `cuda` / `mps` |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `800` / `100` | Character window + overlap (overlap must be < size) |
@@ -114,6 +135,8 @@ Settings are typed via pydantic-settings and read from `.env` / environment vari
 | `LLM_PROVIDER` | `echo` | `echo` (offline) / `ollama` / `openai` (interface-only) |
 | `LLM_BASE_URL` / `LLM_MODEL` | — | e.g. `http://localhost:11434` + `llama3.1` for Ollama |
 | `DATA_DIR` | `<project>/data` | Root for ingested sources / sample data / runtime state |
+| `AUTH_SECRET_KEY` | `dev-only-change-me` | Token signing secret — set a long random value in deployment |
+| `AUTH_TOKEN_TTL_SECONDS` | `86400` | Bearer token lifetime |
 | `LOG_JSON` | `false` | Structured (JSON) logging |
 
 Settings also validate cross-field invariants (e.g. `chunk_overlap < chunk_size`, positive
@@ -135,7 +158,7 @@ src/app/
 ├── infrastructure/       # parsers, chunker, embedder, vector store, retrievers, reranker, llm, persistence
 └── __main__.py           # CLI entrypoint
 data/                     # sample documents + evaluation dataset (runtime state lives here too)
-tests/                    # unit + integration suites (96 tests)
+tests/                    # unit + integration suites (131 tests)
 scripts/                  # sample data generation
 ```
 
@@ -145,25 +168,32 @@ Deeper dives:
 - [Ingestion](docs/ingestion.md) — parsing, chunking, embedding, and how indexes stay consistent.
 - [Retrieval](docs/retrieval.md) — hybrid fusion, reranking, context assembly, and citations.
 - [Evaluation](docs/evaluation.md) — dataset schema, metrics, and how to run/regress.
+- [Access control](docs/access_control.md) — accounts, ownership, sharing, and query scoping.
 
 ---
 
 ## Testing
 
 ```bash
-python -m pytest -q          # full suite (96 tests)
+python -m pytest -q          # full suite (131 tests)
 python -m pytest tests/unit  -q
 python -m pytest tests/integration -q
 ```
 
 Integration tests run against real Chroma (with a fake embedder) and the FastAPI
-`TestClient`; they are self-contained and cleaned up after each run.
+`TestClient`; they are self-contained and cleaned up after each run. The API
+tests exercise the full auth + ownership + sharing flows over HTTP.
 
 ## Docker
 
 ```bash
-docker compose up --build    # serves the API at http://localhost:8000
+docker compose up --build        # PostgreSQL(pgvector) + API; serves at http://localhost:8000
+docker compose up postgres       # Postgres only — handy for a local DEV test of the pgvector backend
 ```
+
+The compose stack runs the API with `VECTOR_STORE_BACKEND=pgvector` against the bundled
+PostgreSQL service. To switch back to Chroma or a different Postgres, override the environment
+variables (see `.env.example`).
 
 See [Dockerfile](Dockerfile) and [docker-compose.yml](docker-compose.yml).
 
@@ -171,8 +201,13 @@ See [Dockerfile](Dockerfile) and [docker-compose.yml](docker-compose.yml).
 
 ## Known limitations
 
-- Chroma's filter builder implements exact-match (`$eq`) and exclusion (`$ne`) filters;
-  `SearchFilters.limit_per_document` is declared but not implemented in the search path.
+- Chroma's filter builder implements exact-match (`$eq`), exclusion (`$ne`), and document
+  scoping (`$in` on `document_id`); pgvector implements the same predicates, plus
+  `document_id IN (...)`. `SearchFilters.limit_per_document` is declared but not implemented
+  in the search path.
+- Query scoping (`SearchFilters.document_ids`) is pushed down into both the vector store and
+  the BM25 index **before** fusion/reranking; the application-layer re-check is a
+  defense-in-depth safety net.
 - `QueryLogRow` exists in the persistence schema, but query logging is not yet wired into
   `RAGService`.
 - `LLM_PROVIDER=openai` is an interface placeholder that raises a clear `ConfigurationError`

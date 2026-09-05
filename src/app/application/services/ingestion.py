@@ -25,7 +25,6 @@ import time
 import uuid
 from collections.abc import Iterable
 from datetime import datetime, timezone
-from typing import Protocol
 
 from app.common.batching import batched
 from app.common.configuration.settings import Settings
@@ -39,31 +38,9 @@ from app.domain.entities import (
     ParsedDocument,
 )
 from app.domain.exceptions import DocumentParseError, UnsupportedDocumentError
-from app.domain.interfaces import Chunker, DocumentParser, Embedder, FileSource
+from app.domain.interfaces import Chunker, DocumentParser, Embedder, FileSource, Persister
 
 logger = logging.getLogger(__name__)
-
-
-class Persister(Protocol):
-    """Receives fully-processed chunks and persists them (documents + chunks +
-    embeddings + lexical index) as one transaction-like operation."""
-
-    def find_by_hash(self, content_hash: str) -> DocumentRecord | None: ...
-
-    def persist_document(
-        self,
-        document: ParsedDocument,
-        embedded_chunks: list[EmbeddedChunk],
-        status: str = "indexed",
-    ) -> None: ...
-
-    def replace_document(
-        self,
-        document: ParsedDocument,
-        embedded_chunks: list[EmbeddedChunk],
-    ) -> None: ...
-
-    def delete_document(self, document_id: str) -> None: ...
 
 
 class IngestionService:
@@ -83,14 +60,19 @@ class IngestionService:
         self.persister = persister
         self.settings = settings
 
-    def process_dir(self, directory: str | None = None) -> list[IngestionResult]:
+    def process_dir(self, directory: str | None = None, owner_id: str | None = None) -> list[IngestionResult]:
         """Discover and ingest every file the source reports."""
         results: list[IngestionResult] = []
         for reference in self.source.list_files():
-            results.append(self.process_file(reference))
+            results.append(self.process_file(reference, owner_id=owner_id))
         return results
 
-    def process_file(self, reference: FileReference, data: bytes | None = None) -> IngestionResult:
+    def process_file(
+        self,
+        reference: FileReference,
+        data: bytes | None = None,
+        owner_id: str | None = None,
+    ) -> IngestionResult:
         started = time.perf_counter()
         try:
             if data is None:
@@ -122,7 +104,7 @@ class IngestionService:
                 )
 
             embedded = self._embed(chunks, document)
-            self.persister.replace_document(document, embedded)
+            self.persister.replace_document(document, embedded, owner_id=owner_id)
             logger.info(
                 "document indexed; document_id=%s path=%s chunks=%d duration_ms=%.1f",
                 document.document_id,
@@ -156,7 +138,7 @@ class IngestionService:
                 duration_ms=_ms(started),
             )
 
-    def process_bytes(self, filename: str, data: bytes) -> IngestionResult:
+    def process_bytes(self, filename: str, data: bytes, owner_id: str | None = None) -> IngestionResult:
         """Ingest raw bytes without going through the file source (API path)."""
         reference = FileReference(
             source_id="upload",
@@ -165,7 +147,7 @@ class IngestionService:
             size_bytes=len(data),
             metadata={},
         )
-        return self.process_file(reference, data=data)
+        return self.process_file(reference, data=data, owner_id=owner_id)
 
     def _embed(self, chunks: list[Chunk], document: ParsedDocument) -> list[EmbeddedChunk]:
         texts = [c.text for c in chunks]

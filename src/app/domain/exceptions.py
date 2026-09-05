@@ -11,7 +11,9 @@ Hierarchy::
       ├── RetrievalError
       ├── RerankError
       ├── LLMError
-      └── RepositoryError
+      ── RepositoryError
+      └── AuthenticationError
+      └── PermissionDeniedError
 """
 
 from __future__ import annotations
@@ -59,3 +61,27 @@ class LLMError(RAGError):
 
 class RepositoryError(RAGError):
     """Failure persisting or loading records from the repository layer."""
+
+
+class DocumentNotFoundError(RAGError):
+    """The requested document does not exist (or is not accessible)."""
+
+
+class AuthenticationError(RAGError):
+    """Invalid credentials or an invalid/expired authentication token."""
+
+
+class InvalidCredentialsError(AuthenticationError):
+    """Wrong email/password on login."""
+
+
+class UserAlreadyExistsError(RAGError):
+    """A user with the given email is already registered."""
+
+
+class UserNotFoundError(RAGError):
+    """A user with the given email does not exist."""
+
+
+class PermissionDeniedError(RAGError):
+    """The authenticated user lacks the required permission on a resource."""

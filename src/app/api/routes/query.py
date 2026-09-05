@@ -4,20 +4,26 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 
+from app.api.auth import get_current_user
 from app.api.schemas import (
     CitationResponse,
     QueryRequest,
     QueryResponse,
     RetrievedChunkResponse,
 )
+from app.domain.entities import User
 
 router = APIRouter()
 
 
 @router.post("/query", response_model=QueryResponse)
-def query_endpoint(body: QueryRequest, request: Request) -> QueryResponse:
+def query_endpoint(
+    body: QueryRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+) -> QueryResponse:
     container = request.app.state.container
     qid = uuid.uuid4().hex
 
@@ -25,6 +31,7 @@ def query_endpoint(body: QueryRequest, request: Request) -> QueryResponse:
         query=body.query,
         top_k=body.top_k,
         query_id=qid,
+        accessible_document_ids=container.document_service.accessible_document_ids(user.user_id),
     )
 
     citations = [

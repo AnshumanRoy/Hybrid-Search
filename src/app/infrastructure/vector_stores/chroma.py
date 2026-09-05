@@ -32,6 +32,11 @@ _METADATA_PAGE_KEY = "page_number"
 _METADATA_FILENAME_KEY = "filename"
 _METADATA_SOURCE_URI_KEY = "source_uri"
 
+# Sentinel for an empty allow-list: Chroma rejects empty "$in" values, so a
+# filter that must match nothing is expressed as equality against an
+# impossible document id.
+_IMPOSSIBLE_DOCUMENT_ID = "__no_document_matches__"
+
 
 def _slugify(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9._-]", "_", name)
@@ -204,6 +209,11 @@ class ChromaVectorStore:
             return None
         clauses: list[dict] = []
 
+        if filters.document_ids is not None:
+            if filters.document_ids:
+                clauses.append({_METADATA_DOCUMENT_KEY: {"$in": list(filters.document_ids)}})
+            else:
+                clauses.append({_METADATA_DOCUMENT_KEY: {"$eq": _IMPOSSIBLE_DOCUMENT_ID}})
         for key, value in filters.exact.items():
             clauses.append({f"md_{key}": {"$eq": value}})
         for key, value in filters.must_not.items():

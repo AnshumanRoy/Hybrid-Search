@@ -53,6 +53,11 @@ class HybridFusion(str, Enum):
     RRF = "rrf"
 
 
+class VectorStoreBackend(str, Enum):
+    CHROMA = "chroma"
+    PGVECTOR = "pgvector"
+
+
 class Settings(BaseSettings):
     """Typed, immutable application configuration."""
 
@@ -69,6 +74,7 @@ class Settings(BaseSettings):
     embedding_version: int = Field(default=1, ge=0)
 
     # Vector store
+    vector_store_backend: VectorStoreBackend = VectorStoreBackend.CHROMA
     vector_store_dir: Path = PROJECT_ROOT / "data" / "vectorstore"
     vector_dimension: int = Field(default=384, ge=1)
     vector_distance: str = "cosine"
@@ -77,6 +83,11 @@ class Settings(BaseSettings):
     # silently mixing vectors from different embedding models.
     @property
     def vector_collection_name(self) -> str:
+        model_slug = self.embedding_model.replace("/", "_").replace(".", "_")
+        return f"hybrid_search_{model_slug}"
+
+    @property
+    def vector_table_name(self) -> str:
         model_slug = self.embedding_model.replace("/", "_").replace(".", "_")
         return f"hybrid_search_{model_slug}"
 
@@ -131,6 +142,10 @@ class Settings(BaseSettings):
     max_query_length: int = Field(default=1000, ge=1)
     max_pdf_pages: int = Field(default=2000, ge=1)
     max_pdf_page_count: int = Field(default=2000, ge=1)
+
+    # Auth
+    auth_secret_key: str = "dev-only-change-me"
+    auth_token_ttl_seconds: int = Field(default=86_400, ge=1)
 
     # Logging
     log_level: str = "INFO"

@@ -11,17 +11,25 @@ from pydantic import BaseModel, Field
 class SearchFilters(BaseModel):
     """Transport-agnostic metadata filters for retrieval.
 
-    Semantics: all conditions under ``exact`` must match the chunk metadata
-    exactly; ``must_not`` matches are excluded.  ``limit_per_document``
-    optionally caps how many chunks are returned per document.
+    Semantics: ``document_ids`` restricts results to chunks belonging to the
+    listed document ids (pushed down into every store: vector + lexical);
+    all conditions under ``exact`` must match the chunk metadata exactly;
+    ``must_not`` matches are excluded.  ``limit_per_document`` optionally caps
+    how many chunks are returned per document.
     """
 
+    document_ids: list[str] | None = None
     exact: dict[str, Any] = Field(default_factory=dict)
     must_not: dict[str, Any] = Field(default_factory=dict)
     limit_per_document: int | None = None
 
     def is_empty(self) -> bool:
-        return not self.exact and not self.must_not and self.limit_per_document is None
+        return (
+            self.document_ids is None
+            and not self.exact
+            and not self.must_not
+            and self.limit_per_document is None
+        )
 
 
 class VectorQuery(BaseModel):

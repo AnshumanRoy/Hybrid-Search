@@ -16,9 +16,10 @@ from app.application.services.rag import RAGService
 from app.application.services.retrieval import RetrievalService
 from app.common.configuration.settings import HybridFusion, Settings
 from app.domain.entities import FileReference
-from app.domain.value_objects import ConfigurableFusion
+from app.domain.value_objects import ConfigurableFusion, SearchFilters
 from app.infrastructure.chunkers.sentence import SentenceAwareChunker
 from app.infrastructure.document_parsers.pdf import PDFParser
+from app.infrastructure.document_parsers.text import TextParser
 from app.infrastructure.llm.echo import EchoLLM
 from app.infrastructure.persistence.database import Database
 from app.infrastructure.persistence.persister import IndexPersister
@@ -115,6 +116,64 @@ def test_end_to_end_pipeline(tmp_path) -> None:
     response = rag.answer("What is the refund policy?", top_k=3)
     assert response.answer
     assert citations_from_chunks(hits)
+
+
+def test_hybrid_retrieval_prefilters_documents(tmp_path) -> None:
+    """SearchFilters.document_ids must constrain BOTH the vector and the lexical
+    branch before fusion — a disallowed document can never surface in results."""
+    settings = Settings(
+        embedding_model="fake-model",
+        vector_dimension=8,
+        embedding_batch_size=2,
+        vector_store_dir=tmp_path / "vs_scope",
+        database_url="sqlite://",
+        data_dir=tmp_path / "data_scope",
+        chunk_size=100,
+        chunk_overlap=20,
+        cache_enabled=False,
+        hybrid_fusion=HybridFusion.RRF,
+    )
+    data_dir = tmp_path / "data_scope"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    embedder = FakeEmbedder()
+    database = Database.from_settings(settings)
+    repository = SQLAlchemyDocumentRepository(database.session_factory)
+    vector_store = ChromaVectorStore(
+        tmp_path / "vs_scope", settings.vector_collection_name, 8, embedding_model="fake-model"
+    )
+    lexical = BM25Retriever()
+    persister = IndexPersister(repository, vector_store, lexical)
+
+    parser = TextParser()
+    chunker = SentenceAwareChunker(settings.chunk_size, settings.chunk_overlap)
+
+    def ingest_text(filename: str, text: str) -> str:
+        ref = FileReference(path=filename, filename=filename, uri=f"file:///{filename}", size_bytes=len(text.encode()))
+        doc = parser.parse(ref, text.encode())
+        embedded = [_embedded(c, embedder) for c in chunker.chunk(doc)]
+        persister.persist_document(doc, embedded)
+        return doc.document_id
+
+    doc_a = ingest_text("alpha.txt", "Acme refund policy allows returns within thirty days for a full refund.")
+    doc_b = ingest_text("beta.txt", "Fresh apples are a delicious fruit enjoyed worldwide all year round.")
+
+    hybrid = HybridRetriever(vector_store, embedder, lexical, ConfigurableFusion(mode="rrf", rrf_k=60), embedding_version=1)
+    retrieval_service = RetrievalService(hybrid, reranker=NoopReranker(), default_top_k=5)
+
+    unfiltered = retrieval_service.retrieve("refund policy returns")
+    assert any(h.document_id == doc_a for h in unfiltered)
+
+    a_only = retrieval_service.retrieve("refund policy returns", filters=SearchFilters(document_ids=[doc_a]))
+    assert a_only
+    assert all(h.document_id == doc_a for h in a_only)
+
+    b_only = retrieval_service.retrieve("refund policy returns", filters=SearchFilters(document_ids=[doc_b]))
+    assert all(h.document_id == doc_b for h in b_only)
+
+    # An empty allow-list (no accessible documents) must yield nothing.
+    none_allowed = retrieval_service.retrieve("refund policy returns", filters=SearchFilters(document_ids=[]))
+    assert none_allowed == []
 
 
 def _embedded(chunk, embedder):

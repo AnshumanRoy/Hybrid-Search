@@ -36,12 +36,12 @@ class RecordingPersister:
             )
         return None
 
-    def persist_document(self, document, embedded_chunks, status="indexed") -> None:
+    def persist_document(self, document, embedded_chunks, status="indexed", owner_id=None) -> None:
         self.calls.append(f"persist:{document.document_id}")
         self.stored_hash = document.content_hash
         self.stored_doc_id = document.document_id
 
-    def replace_document(self, document, embedded_chunks) -> None:
+    def replace_document(self, document, embedded_chunks, owner_id=None) -> None:
         self.calls.append(f"replace:{document.document_id}")
         self.stored_hash = document.content_hash
         self.stored_doc_id = document.document_id

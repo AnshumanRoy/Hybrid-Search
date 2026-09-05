@@ -17,6 +17,9 @@ from app.domain.entities import (
     FileReference,
     ParsedDocument,
     RetrievedChunk,
+    ShareRecord,
+    SharingPermission,
+    User,
 )
 from app.domain.value_objects import SearchFilters, VectorQuery
 
@@ -64,7 +67,11 @@ class VectorStore(Protocol):
 
 
 class DocumentRepository(Protocol):
-    """Persists and queries document + chunk records (SQL by default)."""
+    """Persists and queries document + chunk records (SQL by default).
+
+    Access model: ``owner_id`` links a document to its creator (``None`` ⇒
+    public/read-only); sharing grants viewers or editors read/update access.
+    """
 
     def get_document(self, document_id: str) -> DocumentRecord | None: ...
 
@@ -86,6 +93,38 @@ class DocumentRepository(Protocol):
 
     def delete_chunks_by_document(self, document_id: str) -> None: ...
 
+    # --- ownership & sharing ---
+    def share_document(
+        self,
+        document_id: str,
+        user_email: str,
+        permission: SharingPermission,
+    ) -> ShareRecord | None: ...
+
+    def unshare_document(self, document_id: str, user_email: str) -> bool: ...
+
+    def list_shares(self, document_id: str) -> list[ShareRecord]: ...
+
+    def list_accessible_documents(self, user_id: str) -> list[DocumentRecord]: ...
+
+    def list_accessible_document_ids(self, user_id: str) -> set[str]: ...
+
+    def get_shared_permission(self, document_id: str, user_email: str) -> SharingPermission | None: ...
+
+
+class UserRepository(Protocol):
+    """Persists and queries user accounts."""
+
+    def create_user(self, email: str, password_hash: str, display_name: str | None = None) -> User: ...
+
+    def get_user(self, user_id: str) -> User | None: ...
+
+    def get_user_by_email(self, email: str) -> User | None: ...
+
+    def get_password_hash(self, email: str) -> str | None: ...
+
+    def user_exists_with_email(self, email: str) -> bool: ...
+
 
 class LexicalRetriever(Protocol):
     """Lexical (BM25) retrieval over indexed chunk text."""
@@ -94,9 +133,55 @@ class LexicalRetriever(Protocol):
 
     def remove_documents(self, chunk_ids: Sequence[str]) -> None: ...
 
-    def retrieve(self, query: str, top_k: int) -> list[RetrievedChunk]: ...
+    def retrieve(
+        self,
+        query: str,
+        top_k: int,
+        *,
+        filters: SearchFilters | None = None,
+    ) -> list[RetrievedChunk]: ...
 
     def count(self) -> int: ...
+
+
+class Persister(Protocol):
+    """Receives fully-processed chunks and persists them (documents + chunks +
+    embeddings + lexical index) as one transaction-like operation.
+    """
+
+    def find_by_hash(self, content_hash: str) -> DocumentRecord | None: ...
+
+    def persist_document(
+        self,
+        document: ParsedDocument,
+        embedded_chunks: list[EmbeddedChunk],
+        status: str = "indexed",
+        owner_id: str | None = None,
+    ) -> None: ...
+
+    def replace_document(
+        self,
+        document: ParsedDocument,
+        embedded_chunks: list[EmbeddedChunk],
+        owner_id: str | None = None,
+    ) -> None: ...
+
+    def delete_document(self, document_id: str) -> None: ...
+
+
+class HybridSearch(Protocol):
+    """Fuses semantic + lexical retrieval into one ranked candidate list."""
+
+    def retrieve(
+        self,
+        query: str,
+        top_k: int,
+        *,
+        semantic_top_k: int | None = None,
+        lexical_top_k: int | None = None,
+        filters: SearchFilters | None = None,
+        query_id: str | None = None,
+    ) -> list[RetrievedChunk]: ...
 
 
 class Reranker(Protocol):

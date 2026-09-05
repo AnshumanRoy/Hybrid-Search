@@ -1,11 +1,14 @@
 # Ingestion pipeline
 
-Ingestion converts files into queryable units across three indexes: a SQLite (SQLAlchemy)
-relational store for metadata, a Chroma collection for dense vectors, and an in-process BM25
+Ingestion converts files into queryable units across three indexes: an SQL (SQLAlchemy)
+relational store for metadata (SQLite by default, PostgreSQL with pgvector), a vector store for
+dense vectors (Chroma by default, or a PostgreSQL/pgvector table), and an in-process BM25
 index for lexical scoring.
 
-Entry points: `python -m app ingest [path]` (CLI), `POST /documents/ingest` (single uploaded
-file), `POST /documents/ingest-dir` (server-side directory).
+Entry points: `python -m app ingest [path]` (CLI — documents are stored as
+ownerless/public), `POST /documents/ingest` (single uploaded file, **owned by the
+calling user**), `POST /documents/ingest-dir` (server-side directory, owned by the
+caller).
 
 ## Stage 1 — Source acquisition
 
@@ -62,10 +65,15 @@ slug (`hybrid_search_<model_slug>`) so data never mixes across model versions si
 
 `IndexPersister` coordinates the writes atomically per document:
 
-1. **Relational store** — `DocumentRecord` (id, filename, status, pages, content hash, timestamps)
-   and `ChunkRecord` (id, document id, page, index, text, token ratio, embedding metadata).
-   A `QueryLogRow` table exists for future query logging.
-2. **Vector store** — chunk vectors upserted into Chroma, keyed by chunk id.
+1. **Relational store** — `DocumentRecord` (id, filename, status, pages, content hash, owner,
+   timestamps) and `ChunkRecord` (id, document id, page, index, text, token ratio, embedding
+   metadata). `users` and `document_shares` tables back authentication and viewer/editor shares
+   (see [access control](access_control.md)). A `QueryLogRow` table exists for future query
+   logging.
+2. **Vector store** — chunk vectors upserted into the configured backend. Chroma stores them in a
+   collection named after the embedding model; `PgVectorStore` stores them in a dedicated
+   `hybrid_search_<model>` table (with an HNSW cosine index) in the same PostgreSQL instance as
+   the document store. Both backends refuse to mix vectors from different embedding models.
 3. **Lexical index** — BM25 token frequencies updated for each chunk.
 
 ## Incremental & idempotent ingestion
@@ -75,8 +83,10 @@ Every document gets a `content_hash` (SHA-256 over the raw bytes). Before proces
 
 - **Hash found** → the file is skipped (unchanged content). No embeddings, no index writes.
 - **Hash missing / changed** → `replace_document` runs: old rows for that document id are
-  removed from SQLite, Chroma, and BM25, then the new document is inserted. There is no
-  partial state — a re-ingest of a modified file yields a fresh, consistent index.
+  removed from the relational store, the vector store backend, and BM25, then the new document is
+  inserted. There is no partial state — a re-ingest of a modified file yields a fresh,
+  consistent index. Because the document id is **deterministic** (`doc_<sha256(source::path)[:16]>`),
+  re-indexing keeps the same id and therefore preserves its owner and any shares.
 
 The CLI prints per-file status (`[indexed]`, `[skipped]`, `[failed]`) and the API returns the
 same shape as `IngestResponse`.

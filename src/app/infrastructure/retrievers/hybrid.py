@@ -71,7 +71,7 @@ class HybridRetriever:
         lexical_top_k = lexical_top_k or max(top_k * 2, semantic_top_k)
 
         semantic_results = self._semantic(query, semantic_top_k, filters, query_id)
-        lexical_results = self.lexical.retrieve(query, lexical_top_k)
+        lexical_results = self.lexical.retrieve(query, lexical_top_k, filters=filters)
 
         for chunk in lexical_results:
             if chunk.query_id is None:

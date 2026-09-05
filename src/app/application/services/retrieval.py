@@ -5,29 +5,13 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import Protocol
 
 from app.domain.entities import RetrievedChunk
 from app.domain.exceptions import RetrievalError
+from app.domain.interfaces import HybridSearch, Reranker
 from app.domain.value_objects import SearchFilters
-from app.domain.interfaces import Reranker
 
 logger = logging.getLogger(__name__)
-
-
-class HybridSearch(Protocol):
-    """Fuses semantic + lexical retrieval into one ranked candidate list."""
-
-    def retrieve(
-        self,
-        query: str,
-        top_k: int,
-        *,
-        semantic_top_k: int | None = None,
-        lexical_top_k: int | None = None,
-        filters: SearchFilters | None = None,
-        query_id: str | None = None,
-    ) -> list[RetrievedChunk]: ...
 
 
 class RetrievalService:

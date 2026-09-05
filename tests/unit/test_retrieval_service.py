@@ -15,7 +15,7 @@ class FakeHybrid:
         self.calls = []
 
     def retrieve(self, query, top_k, *, semantic_top_k=None, lexical_top_k=None, filters=None, query_id=None):
-        self.calls.append((query, top_k, query_id))
+        self.calls.append((query, top_k, filters, query_id))
         return self.results[:top_k]
 
 
@@ -58,3 +58,11 @@ def test_default_top_k_used() -> None:
     service = RetrievalService(hybrid, default_top_k=2)
     out = service.retrieve("q")
     assert len(out) == 2
+
+
+def test_filters_forwarded_to_hybrid_search() -> None:
+    hybrid = FakeHybrid([_chunk("a")])
+    service = RetrievalService(hybrid)
+    filters = SearchFilters(document_ids=["doc_x"])
+    service.retrieve("q", top_k=5, filters=filters)
+    assert hybrid.calls[0][2] is filters

@@ -26,9 +26,10 @@ def create_app(container=None) -> FastAPI:
     app = FastAPI(title="Hybrid Search RAG", version="0.1.0")
     app.state.container = container
 
-    from app.api.routes import documents, health, query
+    from app.api.routes import auth, documents, health, query
 
     app.include_router(health.router)
+    app.include_router(auth.router)
     app.include_router(query.router)
     app.include_router(documents.router)
 
