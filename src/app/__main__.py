@@ -31,8 +31,14 @@ def cmd_ingest(args):
 
 def cmd_query(args):
     from app.bootstrap import build_container
+    from app.domain.exceptions import UnknownModelError
+
     container = build_container()
-    response = container.rag_service.answer(args.query, top_k=args.top_k)
+    try:
+        response = container.rag_service.answer(args.query, top_k=args.top_k, model=args.model)
+    except UnknownModelError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
     print(f"\n{response.answer}\n")
     if response.citations:
         print("Citations:")
@@ -40,6 +46,7 @@ def cmd_query(args):
             page = f" p.{c.page_number}" if c.page_number else ""
             print(f"  {c.filename}{page}  [{c.chunk_id}]")
     print(f"\n  query_id={response.metadata.get('query_id', 'N/A')}")
+    print(f"  model={response.metadata.get('llm_model', 'N/A')}")
     print(f"  retrieval_ms={response.metadata.get('retrieval_ms', 'N/A')}")
     print(f"  generation_ms={response.metadata.get('generation_ms', 'N/A')}")
 
@@ -63,7 +70,13 @@ def main():
 
     query_parser = subparsers.add_parser("query", help="Run a RAG query")
     query_parser.add_argument("query", type=str, help="User query text")
-    query_parser.add_argument("--top-k", type=int, default=10)
+    query_parser.add_argument("--top-k", type=int, default=10, help="Number of chunks to retrieve")
+    query_parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="LLM backend to use (echo, ollama, nemotron); defaults to LLM_PROVIDER",
+    )
     query_parser.set_defaults(func=cmd_query)
 
     eval_parser = subparsers.add_parser("evaluate", help="Run evaluation against a dataset")

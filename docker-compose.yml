@@ -16,6 +16,20 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    container_name: hybrid-search-redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   api:
     build: .
     container_name: hybrid-search-api
@@ -27,6 +41,9 @@ services:
       - HF_HUB_OFFLINE=0
       - VECTOR_STORE_BACKEND=pgvector
       - DATABASE_URL=postgresql+psycopg://rag:rag@postgres:5432/rag
+      - CACHE_ENABLED=true
+      - CACHE_BACKEND=redis
+      - CACHE_REDIS_URL=redis://redis:6379/0
       - DATA_DIR=/app/data
       - AUTH_SECRET_KEY=dev-only-change-me
     volumes:
@@ -35,8 +52,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
   pgdata:
+  redisdata:
   hf-cache:

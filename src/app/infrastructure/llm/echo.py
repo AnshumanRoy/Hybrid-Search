@@ -32,6 +32,7 @@ class EchoLLM:
         system_prompt: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        timeout_seconds: float | None = None,
     ) -> str:
         if not prompt.strip():
             raise LLMError("refusing to generate from an empty prompt")

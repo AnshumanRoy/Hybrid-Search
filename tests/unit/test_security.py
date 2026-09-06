@@ -1,4 +1,4 @@
-"""Unit tests for stdlib password hashing and signed bearer tokens."""
+"""Unit tests for stdlib password hashing and JWT (HS256) tokens."""
 
 from __future__ import annotations
 
@@ -24,6 +24,27 @@ def test_password_hashes_differ_per_salt() -> None:
     assert hash_password("same password") != hash_password("same password")
 
 
+def _parts(token: str) -> tuple[str, str, str]:
+    header_b64, payload_b64, sig = token.split(".")
+    return header_b64, payload_b64, sig
+
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def test_token_is_standard_jwt() -> None:
+    token = sign_token({"sub": "user-1", "email": "a@example.com"}, "secret-key", ttl_seconds=3600)
+    assert token.count(".") == 2
+    header_b64, payload_b64, _sig = _parts(token)
+    header = json.loads(base64.urlsafe_b64decode(header_b64 + "=="))
+    assert header == {"alg": "HS256", "typ": "JWT"}
+    payload = json.loads(base64.urlsafe_b64decode(payload_b64 + "=="))
+    assert payload["sub"] == "user-1"
+    assert payload["email"] == "a@example.com"
+    assert payload["exp"] > payload["iat"]
+
+
 def test_token_roundtrip() -> None:
     payload = {"sub": "user-1", "email": "a@example.com"}
     token = sign_token(payload, "secret-key", ttl_seconds=3600)
@@ -41,15 +62,39 @@ def test_token_rejects_wrong_secret() -> None:
 
 def test_token_rejects_tampered_payload() -> None:
     token = sign_token({"sub": "user-1"}, "secret-key", ttl_seconds=3600)
-    payload_b64, sig = token.rsplit(".", 1)
-    forged = base64.urlsafe_b64encode(json.dumps({"sub": "attacker"}).encode()).rstrip(b"=").decode()
-    assert verify_token(f"{forged}.{sig}", "secret-key") is None
+    header_b64, _payload_b64, sig = _parts(token)
+    forged = _b64url(json.dumps({"sub": "attacker"}).encode())
+    assert verify_token(f"{header_b64}.{forged}.{sig}", "secret-key") is None
+
+
+def test_token_rejects_tampered_header() -> None:
+    token = sign_token({"sub": "user-1"}, "secret-key", ttl_seconds=3600)
+    _header_b64, payload_b64, sig = _parts(token)
+    forged_header = _b64url(json.dumps({"alg": "HS384", "typ": "JWT"}).encode())
+    assert verify_token(f"{forged_header}.{payload_b64}.{sig}", "secret-key") is None
 
 
 def test_token_rejects_tampered_signature() -> None:
     token = sign_token({"sub": "user-1"}, "secret-key", ttl_seconds=3600)
-    payload_b64, _ = token.rsplit(".", 1)
-    assert verify_token(f"{payload_b64}.AAAA", "secret-key") is None
+    header_b64, payload_b64, _sig = _parts(token)
+    assert verify_token(f"{header_b64}.{payload_b64}.AAAA", "secret-key") is None
+
+
+def test_token_rejects_alg_none_confusion() -> None:
+    # Even with a "valid" signature over an alg=none header, the pinned HS256
+    # verification must reject the token.
+    header_b64 = _b64url(json.dumps({"alg": "none", "typ": "JWT"}).encode())
+    payload_b64 = _b64url(json.dumps({"sub": "user-1"}).encode())
+    signing_input = f"{header_b64}.{payload_b64}"
+    sig = _b64url(
+        __import__("hashlib").new("sha256", signing_input.encode()).digest()  # not an HMAC signature
+    )
+    assert verify_token(f"{header_b64}.{payload_b64}.{sig}", "secret-key") is None
+
+
+def test_token_rejects_legacy_two_segment_format() -> None:
+    # The pre-JWT custom format was `payload.signature`; it must no longer verify.
+    assert verify_token("cGF5bG9hZA.some-signature", "secret-key") is None
 
 
 def test_token_rejects_garbage() -> None:

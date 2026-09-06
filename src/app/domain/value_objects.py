@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class SearchFilters(BaseModel):
@@ -54,4 +54,25 @@ class ConfigurableFusion(BaseModel):
     rrf_lexical_weight: float = 1.0
 
 
-__all__ = ["SearchFilters", "VectorQuery", "ConfigurableFusion"]
+MAX_REWRITE_VARIANTS = 10
+
+
+class RewrittenQuery(BaseModel):
+    """Output of a query-rewriting pass — the variants to retrieve + strategy used.
+
+    ``variants`` always contains ``original`` first, is deduplicated, and is
+    non-empty (an unrewritable query degrades to ``[original]``).
+    """
+
+    original: str
+    variants: list[str] = Field(min_length=1)
+    strategy: str = "passthrough"
+
+    @model_validator(mode="after")
+    def _original_first(self) -> "RewrittenQuery":
+        if self.variants[0] != self.original:
+            raise ValueError("variants[0] must equal original")
+        return self
+
+
+__all__ = ["SearchFilters", "VectorQuery", "ConfigurableFusion", "RewrittenQuery", "MAX_REWRITE_VARIANTS"]

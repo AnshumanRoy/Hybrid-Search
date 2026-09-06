@@ -1,7 +1,9 @@
 /env
 /data/vectorstore
+/data/vectorstore.bak-*/
 /data/rag.db
 /data/*.db
+/data/*.db.bak-*
 /data/.vectordb
 .env
 __pycache__/

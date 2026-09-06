@@ -11,9 +11,11 @@ The API requires a **bearer token** for everything except `/health` and the
 - `GET /auth/me` — current user.
 
 Passwords are hashed with **PBKDF2-HMAC-SHA256** (310k iterations, per-user salt,
-stdlib only). Tokens are **HMAC-SHA256-signed** payloads (`payload.signature`)
-with an expiry (`AUTH_TOKEN_TTL_SECONDS`, default 24h). There are no external
-auth dependencies.
+stdlib only). Tokens are **standard JWTs** (`header.payload.signature`, compact
+serialization, `alg=HS256` pinned on verification, `typ=JWT`, claims `iat`/`exp`/`sub`/`email`),
+signed with the shared `AUTH_SECRET_KEY`. The algorithm is pinned at `HS256` during verification
+so `alg=none`/algorithm-confusion tokens are rejected. Tokens expire via the `exp` claim
+(`AUTH_TOKEN_TTL_SECONDS`, default 24h). There are no external auth dependencies.
 
 Send the token on every request:
 

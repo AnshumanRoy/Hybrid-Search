@@ -5,6 +5,7 @@ added by implementing ``generate()`` and registering the class here.
 """
 
 from app.infrastructure.llm.echo import EchoLLM
+from app.infrastructure.llm.nemotron import NIMClientBase, NemotronNIMClient
 from app.infrastructure.llm.ollama import OllamaLLM
 
-__all__ = ["EchoLLM", "OllamaLLM"]
+__all__ = ["EchoLLM", "NIMClientBase", "NemotronNIMClient", "OllamaLLM"]

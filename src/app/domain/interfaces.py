@@ -21,7 +21,7 @@ from app.domain.entities import (
     SharingPermission,
     User,
 )
-from app.domain.value_objects import SearchFilters, VectorQuery
+from app.domain.value_objects import RewrittenQuery, SearchFilters, VectorQuery
 
 
 class DocumentParser(Protocol):
@@ -184,6 +184,24 @@ class HybridSearch(Protocol):
     ) -> list[RetrievedChunk]: ...
 
 
+class QueryRewriter(Protocol):
+    """Produces retrieval-oriented query variants for one input query.
+
+    Stateless: conversation history is resolved upstream (orchestrator); the
+    optional ``context_hint`` is non-authoritative and never used to rebuild
+    history. ``rewrite`` must never raise — on any failure it degrades to a
+    passthrough containing the original query.
+    """
+
+    def rewrite(
+        self,
+        query: str,
+        *,
+        max_variants: int,
+        context_hint: str | None = None,
+    ) -> RewrittenQuery: ...
+
+
 class Reranker(Protocol):
     """Re-scores query–document pairs (order-preserving, metadata-preserving)."""
 
@@ -204,6 +222,7 @@ class LLM(Protocol):
         system_prompt: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        timeout_seconds: float | None = None,
     ) -> str: ...
 
     @property

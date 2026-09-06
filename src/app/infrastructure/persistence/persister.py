@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+from app.common.cache.generation import IndexGeneration
 from app.domain.entities import DocumentRecord, EmbeddedChunk, ParsedDocument
 from app.domain.exceptions import VectorStoreError
 from app.domain.interfaces import DocumentRepository, LexicalRetriever, VectorStore
@@ -23,10 +24,12 @@ class IndexPersister:
         repository: DocumentRepository,
         vector_store: VectorStore,
         lexical: LexicalRetriever,
+        generation: IndexGeneration | None = None,
     ) -> None:
         self.repository = repository
         self.vector_store = vector_store
         self.lexical = lexical
+        self.generation = generation
 
     def find_by_hash(self, content_hash: str) -> DocumentRecord | None:
         return self.repository.get_document_by_hash(content_hash)
@@ -57,6 +60,7 @@ class IndexPersister:
         self.repository.add_chunks([ec.chunk for ec in embedded_chunks])
         self.vector_store.upsert(embedded_chunks)
         self.lexical.add_documents([ec.chunk for ec in embedded_chunks])
+        self._bump_generation()
 
     def replace_document(
         self,
@@ -71,6 +75,11 @@ class IndexPersister:
     def delete_document(self, document_id: str) -> None:
         self._clear_document(document_id)
         self.repository.delete_document(document_id)
+        self._bump_generation()
+
+    def _bump_generation(self) -> None:
+        if self.generation is not None:
+            self.generation.bump()
 
     def _clear_document(self, document_id: str) -> None:
         chunks = self.repository.get_chunks_by_document(document_id)

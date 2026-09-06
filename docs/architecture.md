@@ -44,7 +44,8 @@ root). Services hold references only to interfaces; all concrete wiring happens 
 - **Infrastructure** (`app/infrastructure/`) — concrete adapters: PyMuPDF/Text parsers,
   sentence-aware chunker, sentence-transformers embedder, Chroma vector store,
   BM25Retriever/hybrid retrievers, cross-encoder reranker, SQLAlchemy persistence (`users`,
-  `documents.owner_id`, `document_shares`), echo/ollama LLMs.
+  `documents.owner_id`, `document_shares`), echo/ollama/NIM (Nemotron) LLMs — NIM clients share
+  an abstract `NIMClientBase`.
 - **Cross-cutting config** — `ConfigurableFusion` (domain) carries only the fusion
   strategy/weights; the RRF/weighted algorithm itself lives in `app/common/utils/fusion.py`
   so the domain owns the config, not the math. `LLMService` wraps LLM calls in an
@@ -219,9 +220,11 @@ sequenceDiagram
 ## Composability & testability
 
 `build_container(settings=None, *, with_reranker=True, embedder=None, vector_store=None,
-llm=None)` accepts injected doubles for the three heavy pieces (embedder, vector store, LLM).
-Integration tests inject `FakeEmbedder`/real Chroma; the `echo` LLM keeps the whole pipeline
-offline-testable. Every service can also be constructed directly with fakes for unit tests —
+llm=None, llm_providers=None)` accepts injected doubles for the three heavy pieces (embedder,
+vector store, LLM); `llm_providers` overlays the `name → LLM` registry (used by tests to
+inject a fake backend without touching the network). Integration tests inject
+`FakeEmbedder`/real Chroma; the `echo` LLM keeps the whole pipeline offline-testable. Every
+service can also be constructed directly with fakes for unit tests —
 there are no hidden globals or module-level singletons inside components (only
 `get_settings()` exists at the composition root).
 

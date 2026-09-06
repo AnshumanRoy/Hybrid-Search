@@ -10,7 +10,8 @@ Hierarchy::
       ├── VectorStoreError
       ├── RetrievalError
       ├── RerankError
-      ├── LLMError
+      ├── LLMError ── LLMAuthenticationError
+      ├── UnknownModelError
       ── RepositoryError
       └── AuthenticationError
       └── PermissionDeniedError
@@ -57,6 +58,22 @@ class RerankError(RAGError):
 
 class LLMError(RAGError):
     """Failure generating a response (timeout, provider error, bad output)."""
+
+
+class LLMAuthenticationError(LLMError):
+    """The LLM provider rejected our credentials (e.g. NIM 401/403).
+
+    Kept distinct from ``LLMError`` so the API can return a specific status
+    (401) instead of a generic 500 when the configured provider key is bad.
+    """
+
+
+class UnknownModelError(RAGError):
+    """The requested model is not registered in the LLM provider registry."""
+
+    def __init__(self, model_name: str | None) -> None:
+        self.model_name = model_name
+        super().__init__(f"unknown model: {model_name or '<none>'}")
 
 
 class RepositoryError(RAGError):

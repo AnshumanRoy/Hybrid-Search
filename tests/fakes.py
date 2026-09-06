@@ -5,11 +5,74 @@ from __future__ import annotations
 
 import hashlib
 import math
+import time
 from collections.abc import Sequence
 
 from app.domain.entities import Chunk, EmbeddedChunk, RetrievedChunk
 from app.domain.exceptions import VectorStoreError
 from app.domain.value_objects import VectorQuery
+
+
+class FakeCache:
+    """Dict-backed ``Cache`` double with optional failure injection and delay.
+
+    ``fail`` makes every ``get``/``set`` raise (simulates a broken backend);
+    ``get_delay``/``set_delay`` optionally block to exercise single-flight.
+    """
+
+    def __init__(
+        self,
+        fail: bool = False,
+        get_delay: float = 0.0,
+        set_delay: float = 0.0,
+    ) -> None:
+        self.fail = fail
+        self.get_delay = get_delay
+        self.set_delay = set_delay
+        self._data: dict[str, tuple[float | None, object]] = {}
+        self.gets = 0
+        self.sets = 0
+        self.deletes = 0
+
+    @property
+    def backend(self) -> str:
+        return "fake"
+
+    def get(self, key: str):
+        if self.fail:
+            raise RuntimeError("fake cache backend down")
+        self.gets += 1
+        if self.get_delay:
+            time.sleep(self.get_delay)
+        entry = self._data.get(key)
+        if entry is None:
+            return None
+        expires_at, value = entry
+        if expires_at is not None and expires_at < time.monotonic():
+            del self._data[key]
+            return None
+        return value
+
+    def set(self, key: str, value, ttl_seconds: int | None = None) -> None:
+        if self.fail:
+            raise RuntimeError("fake cache backend down")
+        self.sets += 1
+        if self.set_delay:
+            time.sleep(self.set_delay)
+        expires_at = time.monotonic() + ttl_seconds if ttl_seconds else None
+        self._data[key] = (expires_at, value)
+
+    def delete(self, key: str) -> None:
+        if self.fail:
+            raise RuntimeError("fake cache backend down")
+        self.deletes += 1
+        self._data.pop(key, None)
+
+    def clear(self) -> None:
+        self._data.clear()
+
+    def __len__(self) -> int:
+        return len(self._data)
 
 
 def _seed(text: str) -> int:
@@ -131,6 +194,25 @@ class NoopReranker:
 
 
 FakeLLM = None  # EchoLLM used directly where needed
+
+
+class RecordingLLM:
+    """LLM-protocol fake that records every call (prompt + params)."""
+
+    def __init__(self, model_name: str = "recorder") -> None:
+        self.model_name = model_name
+        self.calls: list[tuple[str, str | None, float | None, int | None, float | None]] = []
+
+    def generate(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        timeout_seconds: float | None = None,
+    ) -> str:
+        self.calls.append((prompt, system_prompt, temperature, max_tokens, timeout_seconds))
+        return f"{self.model_name}:{len(prompt)}"
 
 
 def make_chunk(

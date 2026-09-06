@@ -16,6 +16,8 @@ from typing import Literal
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.domain.value_objects import MAX_REWRITE_VARIANTS
+
 def _find_project_root(start: Path) -> Path:
     """Walk up from ``start`` to the directory holding ``pyproject.toml``."""
     for parent in start.resolve().parents:
@@ -38,6 +40,7 @@ class LLMProvider(str, Enum):
 
     ECHO = "echo"
     OLLAMA = "ollama"
+    NEMOTRON = "nemotron"  # NVIDIA NIM (hosted or self-host) via OpenAI-compatible API
     OPENAI = "openai"  # interface-only; registers a clear ConfigurationError until key configured
 
 
@@ -53,9 +56,45 @@ class HybridFusion(str, Enum):
     RRF = "rrf"
 
 
+class RewriteStrategy(str, Enum):
+    """Query-rewriting strategies (multi-query expansion).
+
+    ``LLM`` uses the registered LLM backend (fast, low-latency model — NIM by
+    default); ``HEURISTIC`` is deterministic (typo/stopword/synonym
+    normalization) with no LLM call.
+    """
+
+    LLM = "llm"
+    HEURISTIC = "heuristic"
+
+
 class VectorStoreBackend(str, Enum):
     CHROMA = "chroma"
     PGVECTOR = "pgvector"
+
+
+class VectorCacheBackend(str, Enum):
+    """Cache backends for the vector-store caching layer.
+
+    ``NONE`` is the safe default (uncached); opt in to ``MEMORY`` (single
+    process) or ``REDIS`` (shared across replicas) explicitly.
+    """
+
+    NONE = "none"
+    MEMORY = "memory"
+    REDIS = "redis"
+
+
+class CacheBackend(str, Enum):
+    """Backends for the general (LLM-response + rewrite) caches.
+
+    ``MEMORY`` is the default (bounded in-process TTL dict); ``REDIS`` shares
+    values across replicas. Either backend keeps the same fail-open contract:
+    an unreachable cache degrades to uncached rather than breaking requests.
+    """
+
+    MEMORY = "memory"
+    REDIS = "redis"
 
 
 class Settings(BaseSettings):
@@ -129,12 +168,46 @@ class Settings(BaseSettings):
     llm_api_key: str | None = None
     llm_timeout_seconds: float = Field(default=60.0, ge=1.0)
 
+    # Nemotron (NVIDIA NIM). ``nemotron_enabled`` registers the backend as a
+    # selectable /query model without changing the default provider; setting
+    # LLM_PROVIDER=nemotron also requires an API key.
+    nvidia_api_key: str | None = Field(default=None, repr=False)
+    nemotron_enabled: bool = False
+    nemotron_base_url: str = "https://integrate.api.nvidia.com/v1"
+    nemotron_model: str = "nvidia/nemotron-3.5-lightning-30b-a3b"
+    nemotron_max_tokens: int = Field(default=512, ge=1)
+    nemotron_timeout_seconds: float = Field(default=60.0, ge=1.0)
+    nemotron_max_retries: int = Field(default=3, ge=1, le=10)
+    nemotron_enable_thinking: bool = False
+
     # Context construction
     context_max_chars: int = Field(default=8000, ge=100)
+
+    # Query rewriting (multi-query expansion). ``query_rewrite_enabled`` gates
+    # the /query rewrite step at the composition root (RAGService always
+    # degrades to single-query when disabled); /rewrite works regardless.
+    query_rewrite_enabled: bool = False
+    query_rewrite_strategy: RewriteStrategy = RewriteStrategy.LLM
+    rewrite_max_variants: int = Field(default=3, ge=1, le=MAX_REWRITE_VARIANTS)
+    rewrite_llm_model: str = "nemotron"
+    rewrite_timeout_seconds: float = Field(default=15.0, ge=1.0)
 
     # Caching
     cache_enabled: bool = True
     cache_max_entries: int = Field(default=4096, ge=1)
+    cache_backend: CacheBackend = CacheBackend.MEMORY
+    cache_ttl_seconds: int = Field(default=3600, ge=1)
+    cache_redis_url: str = "redis://localhost:6379/0"
+
+    # Vector-store caching. Correctness comes from a per-collection generation
+    # counter folded into the cache key (bumped by IndexPersister on every
+    # write); the TTL below is a memory-hygiene bound only, not the
+    # correctness mechanism.
+    vector_cache_backend: VectorCacheBackend = VectorCacheBackend.NONE
+    vector_cache_ttl_seconds: int = Field(default=300, ge=1)
+    vector_cache_max_entries: int = Field(default=4096, ge=1)
+    vector_cache_stampede_wait_seconds: float = Field(default=2.0, gt=0)
+    vector_cache_redis_url: str = "redis://localhost:6379/0"
 
     # API
     api_host: str = "0.0.0.0"

@@ -8,7 +8,8 @@ from fastapi.testclient import TestClient
 from app.api.app import create_app
 from app.bootstrap import build_container
 from app.common.configuration.settings import Settings
-from tests.fakes import FakeEmbedder
+from app.domain.exceptions import LLMAuthenticationError
+from tests.fakes import FakeEmbedder, RecordingLLM
 
 PASSWORD = "hunter2-password"
 
@@ -26,12 +27,14 @@ def client(tmp_path):
         chunk_overlap=20,
         cache_enabled=False,
         auth_secret_key="test-secret",
+        nemotron_enabled=False,
     )
     container = build_container(
         settings,
         with_reranker=False,
         embedder=FakeEmbedder(model_name="fake-api-model"),
         vector_store=None,  # real Chroma against tmp dir
+        llm_providers={"ollama": RecordingLLM("ollama")},  # sidebar backend, no network
     )
     app = create_app(container)
     return TestClient(app)
@@ -101,6 +104,70 @@ def test_query_rejects_empty_query(client) -> None:
     token = register(client)
     response = client.post("/query", headers=auth(token), json={"query": ""})
     assert response.status_code == 422
+
+
+def test_query_unknown_model_returns_404(client) -> None:
+    token = register(client)
+    response = client.post(
+        "/query",
+        headers=auth(token),
+        json={"query": "hello", "model": "definitely-not-a-model"},
+    )
+    assert response.status_code == 404
+    assert "unknown model" in response.json()["detail"]
+
+
+def test_query_nim_auth_failure_returns_401(client) -> None:
+    class _BadNim:
+        @property
+        def model_name(self) -> str:
+            return "nemotron"
+
+        def generate(
+            self,
+            prompt,
+            system_prompt=None,
+            temperature=None,
+            max_tokens=None,
+            timeout_seconds=None,
+        ) -> str:
+            raise LLMAuthenticationError("NIM authentication failed (status 401); check NVIDIA_API_KEY")
+
+    bad_container = build_container(
+        client.app.state.container.settings,
+        with_reranker=False,
+        embedder=FakeEmbedder(model_name="fake-api-model"),
+        vector_store=None,
+        llm_providers={"nemotron": _BadNim(), "ollama": RecordingLLM("ollama")},
+    )
+    bad_client = TestClient(create_app(bad_container))
+
+    token = register(bad_client)
+    response = bad_client.post(
+        "/query",
+        headers=auth(token),
+        json={"query": "hello", "model": "nemotron"},
+    )
+    assert response.status_code == 401
+
+
+def test_query_selectable_backends_and_metadata(client) -> None:
+    token = register(client)
+    headers = auth(token)
+    data = b"Acme Corporation refund policy. Customers may return items within 30 days."
+    client.post("/documents/ingest", headers=headers, files={"file": ("policy.txt", data, "text/plain")})
+
+    default = client.post("/query", headers=headers, json={"query": "refund policy", "top_k": 5})
+    assert default.status_code == 200
+    assert default.json()["metadata"]["llm_model"] == "echo"
+
+    echo = client.post("/query", headers=headers, json={"query": "refund policy", "top_k": 5, "model": "echo"})
+    assert echo.status_code == 200
+    assert echo.json()["metadata"]["llm_model"] == "echo"
+
+    ollama = client.post("/query", headers=headers, json={"query": "refund policy", "top_k": 5, "model": "ollama"})
+    assert ollama.status_code == 200
+    assert ollama.json()["metadata"]["llm_model"] == "ollama"
 
 
 def test_ingest_rejects_empty_upload(client) -> None:

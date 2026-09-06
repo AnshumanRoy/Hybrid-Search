@@ -33,11 +33,15 @@ Most API endpoints require a user account (see [access control](docs/access_cont
   runs on Chroma (default) or PostgreSQL/pgvector (HNSW cosine index).
 - **Grounded generation** — context assembly with explicit citations (filename, page, chunk),
   deterministic prompt templates that treat retrieved context as *untrusted*.
+- **Pluggable LLM backends** — `echo` (offline placeholder), local `ollama`, or NVIDIA
+  **Nemotron 3.5 Lightning** via NVIDIA NIM (OpenAI-compatible), selectable per request via
+  `model` on `/query` or the CLI `--model` flag. NIM clients share an abstract base so new
+  models are thin subclasses.
 - **Multi-user documents** — user accounts (password hashing + signed bearer tokens, stdlib),
   per-document ownership, **viewer/editor sharing**, document-level CRUD, and query scoping
   so answers only cite documents you can see.
 - **Evaluation harness** — retrieval metrics (recall/precision@K, MRR, nDCG) plus generation
-  metrics (faithfulness, answer/context relevance). 131 tests included (unit + integration).
+  metrics (faithfulness, answer/context relevance). 244 tests included (unit + integration).
 - **API + CLI** — FastAPI (`/health`, `/query`, `/documents/ingest*`, `/documents`) and a CLI for
   `ingest`, `query`, and `evaluate`.
 - **Fail-soft design** — missing/offline reranker, LLM, or embedding model degrades gracefully
@@ -61,6 +65,10 @@ python -m app ingest
 
 # 4. Ask a question (default LLM_PROVIDER=echo prints a deterministic placeholder)
 python -m app query "What is Acme's refund window for physical products?"
+
+# 4b. (Optional) Ask through NVIDIA Nemotron 3.5 Lightning via NIM.
+#     Requires NVIDIA_API_KEY in .env and NEMOTRON_ENABLED=true (or LLM_PROVIDER=nemotron).
+python -m app query "What is Acme's refund window for physical products?" --model nemotron
 
 # 5. Serve the API
 uvicorn app.app:app --reload
@@ -89,7 +97,7 @@ export RERANKER_ENABLED=false
 | Command | Description |
 | --- | --- |
 | `python -m app ingest [path]` | Ingest every allowed file in `path`; defaults to `data/sample`. Prints per-file status (`indexed` / `skipped` / `failed`). |
-| `python -m app query "question" [--top-k N]` | Run the full RAG pipeline and print the answer with citations and timing metadata. |
+| `python -m app query "question" [--top-k N] [--model NAME]` | Run the full RAG pipeline and print the answer with citations and timing metadata. `--model` selects the LLM backend (`echo`/`ollama`/`nemotron`); defaults to `LLM_PROVIDER`; unknown names exit 1. |
 | `python -m app evaluate [dataset] [--generate] [--top-k N]` | Run retrieval (and optional generation) evaluation metrics against a dataset. |
 
 ## API
@@ -103,7 +111,8 @@ All endpoints except `/health`, `/auth/register`, and `/auth/login` require
 | POST | `/auth/register` | `{"email","password","display_name"?}` | `{token, user}` |
 | POST | `/auth/login` | `{"email","password"}` | `{token, user}` |
 | GET | `/auth/me` | — | `{user_id, email, display_name, created_at}` |
-| POST | `/query` | `{"query", "top_k"}` | `{answer, citations[], retrieved_chunks[], metadata{query_id, retrieval_ms, generation_ms}}` |
+| POST | `/query` | `{"query", "top_k", "model", "rewrite"?}` | `{answer, citations[], retrieved_chunks[], metadata{query_id, llm_model, retrieval_ms, generation_ms, rewritten_variants?, rewrite_strategy?}}` |
+| POST | `/rewrite` | `{"query", "strategy"?, "max_variants"?}` (auth required) | `{original, variants[], strategy}` |
 | POST | `/documents/ingest` | multipart `file` | `list[{document_id, filename, status, chunks_embedded, error, duration_ms}]` |
 | POST | `/documents/ingest-dir` | — | same as above (server-side directory ingest, owned by caller) |
 | GET | `/documents` | — | `list[{..., permission:"owner"\|"editor"\|"viewer", shared, owner_email}]` (your scope only) |
@@ -115,6 +124,21 @@ All endpoints except `/health`, `/auth/register`, and `/auth/login` require
 | DELETE | `/documents/{id}/share/{email}` | — | revoke access (owner only) |
 
 Interactive docs at `/docs` (Swagger UI). Full details in [docs/access_control.md](docs/access_control.md).
+
+`POST /query` accepts an optional `model` field selecting the LLM backend (`echo`, `ollama`, or
+`nemotron`). The registry always contains `echo` and `ollama`; `nemotron` is registered only
+when `NEMOTRON_ENABLED=true` or `LLM_PROVIDER=nemotron`. Unknown model names are rejected with
+HTTP 404; invalid NVIDIA credentials return HTTP 401. The resolved model is echoed in
+`metadata.llm_model`.
+
+**Query rewriting (multi-query expansion).** The orchestrator-facing feature turns one query
+into 1–N retrieval variants, retrieves each variant, and cross-variant fuses the results one
+level above the existing hybrid fusion. It lives behind `QUERY_REWRITE_ENABLED` (default
+`false`) — the standalone `POST /rewrite` endpoint works regardless of the flag, so an
+orchestrator can "see" the variants before deciding whether to retrieve. Strategy `llm`
+(registry backend, default `nemotron`) or deterministic `heuristic` (typo/stopword
+normalization + synonyms); LLM failures fail open to heuristic, then passthrough. `max_variants`
+is clamped server-side to `[1, 10]`. See [docs/query_rewriting.md](docs/query_rewriting.md).
 
 ---
 
@@ -132,8 +156,21 @@ Settings are typed via pydantic-settings and read from `.env` / environment vari
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `800` / `100` | Character window + overlap (overlap must be < size) |
 | `HYBRID_FUSION` | `rrf` | `rrf` (default) or `weighted` fusion of semantic + BM25 |
 | `RERANKER_ENABLED` | `true` | Toggle the cross-encoder reranker |
-| `LLM_PROVIDER` | `echo` | `echo` (offline) / `ollama` / `openai` (interface-only) |
+| `LLM_PROVIDER` | `echo` | `echo` (offline) / `ollama` / `nemotron` (NVIDIA NIM) / `openai` (interface-only) |
 | `LLM_BASE_URL` / `LLM_MODEL` | — | e.g. `http://localhost:11434` + `llama3.1` for Ollama |
+| `NVIDIA_API_KEY` | — | Required for `nemotron` (NVIDIA NIM); set in `.env`, never logged or echoed |
+| `NEMOTRON_ENABLED` | `false` | Register `nemotron` for per-request selection without making it the default |
+| `NEMOTRON_BASE_URL` | `https://integrate.api.nvidia.com/v1` | NVIDIA NIM OpenAI-compatible endpoint |
+| `NEMOTRON_MODEL` | `nvidia/nemotron-3.5-lightning-30b-a3b` | Nemotron 3.5 Lightning model served by NIM |
+| `NEMOTRON_MAX_TOKENS` | `512` | Max generated tokens |
+| `NEMOTRON_TIMEOUT_SECONDS` | `60.0` | HTTP timeout per NIM request |
+| `NEMOTRON_MAX_RETRIES` | `3` | Total attempts; exponential backoff, retries timeouts and 429/5xx |
+| `NEMOTRON_ENABLE_THINKING` | `false` | Sends `chat_template_kwargs.enable_thinking` to NIM |
+| `QUERY_REWRITE_ENABLED` | `false` | Gate automatic rewriting inside `/query` (`/rewrite` always works) |
+| `QUERY_REWRITE_STRATEGY` | `llm` | `llm` or `heuristic` — default rewriter for `/query` and `/rewrite` |
+| `REWRITE_MAX_VARIANTS` | `3` | Default variant count (clamped to `MAX_REWRITE_VARIANTS=10`) |
+| `REWRITE_LLM_MODEL` | `nemotron` | LLM backend used by the `llm` strategy |
+| `REWRITE_TIMEOUT_SECONDS` | `15.0` | Per-request timeout for the rewrite LLM call |
 | `DATA_DIR` | `<project>/data` | Root for ingested sources / sample data / runtime state |
 | `AUTH_SECRET_KEY` | `dev-only-change-me` | Token signing secret — set a long random value in deployment |
 | `AUTH_TOKEN_TTL_SECONDS` | `86400` | Bearer token lifetime |
@@ -150,15 +187,15 @@ so vectors from different models can never be silently mixed.
 ```
 src/app/
 ├── api/                  # FastAPI app + routes + request/response schemas
-├── application/services/ # RAGService, RetrievalService, IngestionService, context+prompt, LLMService
+├── application/services/ # RAGService, RetrievalService, IngestionService, RewriteService, context+prompt, LLMService
 ├── bootstrap.py          # Composition root (build_container)
 ├── common/               # config (settings), logging (JSON/redaction), batching, cache, file sources, utils
 ├── domain/               # entities, value objects, exceptions, and the Protocol interfaces
 ├── evaluation/           # metrics + runner + `python -m app.evaluation`
-├── infrastructure/       # parsers, chunker, embedder, vector store, retrievers, reranker, llm, persistence
+├── infrastructure/       # parsers, chunker, embedder, vector store, retrievers, reranker, llm, rewriters, persistence
 └── __main__.py           # CLI entrypoint
 data/                     # sample documents + evaluation dataset (runtime state lives here too)
-tests/                    # unit + integration suites (131 tests)
+tests/                    # unit + integration suites (244 tests)
 scripts/                  # sample data generation
 ```
 
@@ -167,6 +204,7 @@ Deeper dives:
 - [Architecture](docs/architecture.md) — layers, dependency graph, and flow.
 - [Ingestion](docs/ingestion.md) — parsing, chunking, embedding, and how indexes stay consistent.
 - [Retrieval](docs/retrieval.md) — hybrid fusion, reranking, context assembly, and citations.
+- [Query rewriting](docs/query_rewriting.md) — multi-query expansion design, strategies, and the fail-open contract.
 - [Evaluation](docs/evaluation.md) — dataset schema, metrics, and how to run/regress.
 - [Access control](docs/access_control.md) — accounts, ownership, sharing, and query scoping.
 
@@ -175,7 +213,7 @@ Deeper dives:
 ## Testing
 
 ```bash
-python -m pytest -q          # full suite (131 tests)
+python -m pytest -q          # full suite (244 tests)
 python -m pytest tests/unit  -q
 python -m pytest tests/integration -q
 ```

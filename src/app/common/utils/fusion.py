@@ -5,7 +5,7 @@ Pure functions — no I/O, no framework dependencies, easily unit-tested.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
 from app.domain.entities import RetrievedChunk
 
@@ -107,6 +107,105 @@ def rrf_fusion(
     return merged
 
 
+def rrf_merge_lists(
+    lists: Sequence[Sequence[RetrievedChunk]],
+    k: int = 60,
+    weights: Sequence[float] | None = None,
+) -> list[RetrievedChunk]:
+    """Reciprocal-rank fusion over N ranked lists (cross-variant merge).
+
+    RRF is rank-based and list-length-insensitive, which is exactly what is
+    needed one level up from vector+BM25 fusion — merging the ranked outputs
+    of multiple query variants into one candidate pool. Per-list ``weights``
+    default to unit (equal contribution per variant).
+    """
+    if not lists:
+        return []
+    if weights is None:
+        weights = [1.0] * len(lists)
+    if len(weights) != len(lists):
+        raise ValueError("weights must have one entry per list")
+
+    base: dict[str, RetrievedChunk] = {}
+    scores: dict[str, float] = {}
+    for rank_list, weight in zip(lists, weights):
+        for rank, chunk in enumerate(rank_list):
+            base.setdefault(chunk.chunk_id, chunk)
+            scores[chunk.chunk_id] = scores.get(chunk.chunk_id, 0.0) + weight / (k + rank + 1)
+
+    ordered = sorted(scores, key=lambda cid: scores[cid], reverse=True)
+    merged: list[RetrievedChunk] = []
+    for chunk_id in ordered:
+        merged.append(
+            base[chunk_id].model_copy(
+                deep=True,
+                update={
+                    "fused_score": round(scores[chunk_id], 6),
+                    "retrieval_metadata": {
+                        **base[chunk_id].retrieval_metadata,
+                        "rrf": {
+                            "k": k,
+                            "n_lists": len(lists),
+                            "weights": list(weights),
+                            "rrf_score": scores[chunk_id],
+                        },
+                    },
+                },
+            )
+        )
+    return merged
+
+
+def weighted_merge_lists(
+    lists: Sequence[Sequence[RetrievedChunk]],
+    weights: Sequence[float] | None = None,
+) -> list[RetrievedChunk]:
+    """Weighted-score merge over N ranked lists (cross-variant merge).
+
+    Each list's per-chunk score (``fused_score``) is min-max normalized to
+    [0,1] before the weighted sum; per-list ``weights`` default to unit.
+    """
+    if not lists:
+        return []
+    if weights is None:
+        weights = [1.0] * len(lists)
+    if len(weights) != len(lists):
+        raise ValueError("weights must have one entry per list")
+
+    base: dict[str, RetrievedChunk] = {}
+    normalized: list[list[float]] = []
+    for rank_list in lists:
+        for chunk in rank_list:
+            base.setdefault(chunk.chunk_id, chunk)
+        normalized.append(_normalize_scores([c.fused_score for c in rank_list]))
+
+    ids = {c.chunk_id for rank_list in lists for c in rank_list}
+    fused: list[RetrievedChunk] = []
+    for chunk_id in ids:
+        score = 0.0
+        for i, rank_list in enumerate(lists):
+            for j, chunk in enumerate(rank_list):
+                if chunk.chunk_id == chunk_id:
+                    score += weights[i] * normalized[i][j]
+                    break
+        fused.append(
+            base[chunk_id].model_copy(
+                deep=True,
+                update={
+                    "fused_score": round(score, 6),
+                    "retrieval_metadata": {
+                        **base[chunk_id].retrieval_metadata,
+                        "weighted_fusion": {
+                            "n_lists": len(lists),
+                            "weights": list(weights),
+                        },
+                    },
+                },
+            )
+        )
+    return sorted(fused, key=lambda c: (c.fused_score or 0.0), reverse=True)
+
+
 def _normalize_scores(scores: Iterable[float | None]) -> list[float]:
     values = [s if s is not None else 0.0 for s in scores]
     if not values:
@@ -117,4 +216,4 @@ def _normalize_scores(scores: Iterable[float | None]) -> list[float]:
     return [(v - lo) / (hi - lo) for v in values]
 
 
-__all__ = ["weighted_fusion", "rrf_fusion"]
+__all__ = ["weighted_fusion", "rrf_fusion", "weighted_merge_lists", "rrf_merge_lists"]

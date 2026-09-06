@@ -35,6 +35,7 @@ class OllamaLLM(LLM):
         system_prompt: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        timeout_seconds: float | None = None,
     ) -> str:
         try:
             import httpx
@@ -53,7 +54,7 @@ class OllamaLLM(LLM):
         payload["messages"].append({"role": "user", "content": prompt})
 
         try:
-            with httpx.Client(timeout=self._timeout) as client:
+            with httpx.Client(timeout=timeout_seconds or self._timeout) as client:
                 response = client.post(f"{self.base_url}/api/chat", json=payload)
                 response.raise_for_status()
                 data = response.json()

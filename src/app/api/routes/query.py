@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.api.auth import get_current_user
 from app.api.schemas import (
@@ -14,6 +14,7 @@ from app.api.schemas import (
     RetrievedChunkResponse,
 )
 from app.domain.entities import User
+from app.domain.exceptions import LLMAuthenticationError, UnknownModelError
 
 router = APIRouter()
 
@@ -27,12 +28,22 @@ def query_endpoint(
     container = request.app.state.container
     qid = uuid.uuid4().hex
 
-    response = container.rag_service.answer(
-        query=body.query,
-        top_k=body.top_k,
-        query_id=qid,
-        accessible_document_ids=container.document_service.accessible_document_ids(user.user_id),
-    )
+    try:
+        response = container.rag_service.answer(
+            query=body.query,
+            top_k=body.top_k,
+            query_id=qid,
+            accessible_document_ids=container.document_service.accessible_document_ids(user.user_id),
+            model=body.model,
+            rewrite=body.rewrite,
+            max_variants=body.max_variants,
+        )
+    except UnknownModelError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except LLMAuthenticationError as exc:
+        # Provider rejected our key — surface as 401 (invalid credentials on
+        # the configured backend), never as a generic 500.
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
 
     citations = [
         CitationResponse(

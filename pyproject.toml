@@ -22,6 +22,7 @@ dependencies = [
     "rank-bm25>=0.2.2",
     "pgvector>=0.2.5",
     "psycopg[binary]>=3.1",
+    "redis>=5",
 ]
 
 [project.optional-dependencies]

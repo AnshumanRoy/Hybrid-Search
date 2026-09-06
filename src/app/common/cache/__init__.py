@@ -39,6 +39,10 @@ class InMemoryCache:
         self._data: dict[str, tuple[float, Any]] = {}
         self._lock = __import__("threading").Lock()
 
+    @property
+    def backend(self) -> str:
+        return "memory"
+
     def get(self, key: str) -> Any | None:
         with self._lock:
             entry = self._data.get(key)

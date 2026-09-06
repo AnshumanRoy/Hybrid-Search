@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.common.configuration.settings import RewriteStrategy
 from app.domain.entities import SharingPermission
 
 
@@ -67,6 +68,9 @@ class QueryRequest(BaseModel):
     query: str = Field(min_length=1, max_length=1000)
     top_k: int = Field(default=10, ge=1, le=100)
     filters: dict[str, Any] = Field(default_factory=dict)
+    model: str | None = Field(default=None, max_length=255)
+    rewrite: bool | None = Field(default=None, description="Override QUERY_REWRITE_ENABLED for this request")
+    max_variants: int | None = Field(default=None, ge=1, description="Clamped server-side to the hard ceiling")
 
 
 class QueryResponse(BaseModel):
@@ -75,6 +79,18 @@ class QueryResponse(BaseModel):
     retrieved_chunks: list[RetrievedChunkResponse] = Field(default_factory=list)
     query_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RewriteRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=1000)
+    strategy: RewriteStrategy | None = Field(default=None, description="'llm' or 'heuristic'; defaults to QUERY_REWRITE_STRATEGY")
+    max_variants: int | None = Field(default=None, ge=1, description="Clamped server-side to the hard ceiling")
+
+
+class RewriteResponse(BaseModel):
+    original: str
+    variants: list[str]
+    strategy: str
 
 
 class HealthResponse(BaseModel):
