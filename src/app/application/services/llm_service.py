@@ -41,6 +41,7 @@ class LLMService:
         self.default_max_tokens = default_max_tokens
         self.providers = providers
         self.default_model = default_model
+        self.last_usage: dict | None = None
 
     def model_name_for(self, model: str | None = None) -> str:
         """Resolve the provider for ``model`` and return its ``model_name``.
@@ -79,6 +80,7 @@ class LLMService:
             max_tokens=max_tokens if max_tokens is not None else self.default_max_tokens,
             timeout_seconds=timeout_seconds,
         )
+        self.last_usage = getattr(provider, "last_usage", None)
 
         if self.cache is not None and cacheable:
             self.cache.set(key, response)

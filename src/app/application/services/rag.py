@@ -130,6 +130,10 @@ class RAGService:
             metadata["rewritten_variants"] = rewritten.variants
             metadata["rewrite_strategy"] = rewritten.strategy
 
+        llm_usage = getattr(self.llm, "last_usage", None)
+        if llm_usage:
+            metadata["llm_usage"] = llm_usage
+
         return RAGResponse(
             answer=answer,
             citations=citations,

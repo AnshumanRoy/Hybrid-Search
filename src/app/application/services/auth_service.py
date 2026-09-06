@@ -52,7 +52,7 @@ class AuthService:
 
     def issue_token(self, user: User) -> str:
         return sign_token(
-            {"sub": user.user_id, "email": user.email},
+            {"sub": user.user_id, "email": user.email, "ver": user.token_version},
             self.settings.auth_secret_key,
             self.settings.auth_token_ttl_seconds,
         )
@@ -64,4 +64,16 @@ class AuthService:
         user = self.users.get_user(payload.get("sub", ""))
         if user is None:
             raise AuthenticationError("token references a removed user")
+        if payload.get("ver", 0) != user.token_version:
+            raise AuthenticationError("token revoked — please log in again")
         return user
+
+    def revoke_all_tokens(self, user_id: str) -> None:
+        """Invalidate every token ever issued to ``user_id``.
+
+        Bumps ``users.token_version``; any token carrying an older ``ver``
+        claim stops verifying immediately (stateless, no revocation list).
+        """
+        if self.users.increment_token_version(user_id) is None:
+            raise AuthenticationError("no such user")
+        logger.info("revoked all tokens; user_id=%s", user_id)

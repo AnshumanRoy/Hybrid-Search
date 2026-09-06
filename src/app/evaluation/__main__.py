@@ -13,12 +13,26 @@ def main() -> None:
     parser.add_argument("--dataset", required=True, help="Path to JSON/JSONL evaluation dataset")
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--generate", action="store_true", help="Also score generation with the LLM")
+    parser.add_argument(
+        "--rewrite",
+        action="store_true",
+        help="A/B variant: fan out over multiple rewritten queries (multi-query expansion)",
+    )
+    parser.add_argument("--max-variants", type=int, default=3, help="Variant count when --rewrite is set")
+    parser.add_argument("--model", default=None, help="LLM registry name to benchmark (e.g. echo, nemotron)")
     parser.add_argument("--out", default=None, help="Write report JSON to this path")
     args = parser.parse_args()
 
     container = build_container()
     runner = __import__("app.evaluation.runner", fromlist=["EvaluationRunner"]).EvaluationRunner(container)
-    report = runner.run(args.dataset, generate=args.generate, top_k=args.top_k)
+    report = runner.run(
+        args.dataset,
+        generate=args.generate,
+        top_k=args.top_k,
+        rewrite=args.rewrite,
+        max_variants=args.max_variants,
+        model=args.model,
+    )
     print(json.dumps(report, indent=2))
     if args.out:
         import pathlib

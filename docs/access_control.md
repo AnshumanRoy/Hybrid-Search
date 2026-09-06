@@ -9,19 +9,33 @@ The API requires a **bearer token** for everything except `/health` and the
 - `POST /auth/register` — create an account. Returns an access token immediately.
 - `POST /auth/login` — exchange email+password for a token.
 - `GET /auth/me` — current user.
+- `POST /auth/refresh` — exchange a valid access token for a fresh one (same `ver`, no re-login).
+- `POST /auth/revoke` — bump the caller's `token_version`; **every** outstanding token stops
+  working immediately ("log out everywhere"). Returns 204.
 
 Passwords are hashed with **PBKDF2-HMAC-SHA256** (310k iterations, per-user salt,
 stdlib only). Tokens are **standard JWTs** (`header.payload.signature`, compact
-serialization, `alg=HS256` pinned on verification, `typ=JWT`, claims `iat`/`exp`/`sub`/`email`),
-signed with the shared `AUTH_SECRET_KEY`. The algorithm is pinned at `HS256` during verification
+serialization, `alg=HS256` pinned on verification, `typ=JWT`, claims `iat`/`exp`/`sub`/`email`
+plus a per-token `jti` and the revocation `ver` claim), signed with the shared
+`AUTH_SECRET_KEY`. The algorithm is pinned at `HS256` during verification
 so `alg=none`/algorithm-confusion tokens are rejected. Tokens expire via the `exp` claim
-(`AUTH_TOKEN_TTL_SECONDS`, default 24h). There are no external auth dependencies.
+(`AUTH_TOKEN_TTL_SECONDS`, default **15 min** — keep short and re-issue via `/auth/refresh`).
+
+**Revocation** is stateless: every token carries a `ver` claim equal to the user's
+`users.token_version`. `POST /auth/revoke` increments that row, so any token with an older
+`ver` stops verifying on the next request — no revocation list to maintain, no Redis dependency.
+There are no external auth dependencies.
 
 Send the token on every request:
 
 ```
 Authorization: Bearer <token>
 ```
+
+**Rate limiting**: `/query` and `/rewrite` (the cost-bearing endpoints) enforce a per-user
+fixed-window quota (burst window + daily cap) keyed on the authenticated `user_id`, backed by
+the shared cache backend. Exceeding it returns `429` with `Retry-After`. The limiter fails open
+if the cache is unavailable.
 
 ## Access model
 
@@ -75,6 +89,10 @@ or shared.
 | Env var | Default | Meaning |
 | --- | --- | --- |
 | `AUTH_SECRET_KEY` | `dev-only-change-me` | Token signing secret — set a long random value in deployment |
-| `AUTH_TOKEN_TTL_SECONDS` | `86400` | Token lifetime |
+| `AUTH_TOKEN_TTL_SECONDS` | `900` | Access-token lifetime (seconds); re-issue via `/auth/refresh` |
+| `RATE_LIMIT_ENABLED` | `true` | Gate the per-user rate limiter on `/query` + `/rewrite` |
+| `RATE_LIMIT_WINDOW_SECONDS` | `60` | Burst window length |
+| `RATE_LIMIT_MAX_REQUESTS` | `120` | Max requests per user per burst window |
+| `RATE_LIMIT_DAILY_MAX_REQUESTS` | `2000` | Max requests per user per day |
 
-Both maps to `Settings.auth_secret_key` / `auth_token_ttl_seconds`.
+All map to `Settings.auth_*` / `Settings.rate_limit_*` fields.

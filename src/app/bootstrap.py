@@ -19,6 +19,7 @@ from app.application.services import (
 )
 from app.application.services.auth_service import AuthService
 from app.application.services.document_service import DocumentService
+from app.application.services.rate_limiting import RateLimiter
 from app.application.services.rewrite import RewriteService
 from app.common.cache import Cache, InMemoryCache
 from app.common.cache.generation import (
@@ -85,6 +86,7 @@ class Container:
     ingestion_service: IngestionService
     auth_service: AuthService
     document_service: DocumentService
+    rate_limiter: RateLimiter
     source: LocalFileSource
 
 
@@ -226,6 +228,15 @@ def build_container(
     auth_service = AuthService(users, settings)
     document_service = DocumentService(ingestion_service, repository, users)
 
+    # --- Cost guardrail (per-user rate limiting on /query + /rewrite) ---
+    rate_limiter = RateLimiter(
+        _build_general_cache(settings, prefix="rl:") if settings.rate_limit_enabled else None,
+        windows=[
+            (settings.rate_limit_window_seconds, settings.rate_limit_max_requests),
+            (86_400, settings.rate_limit_daily_max_requests),
+        ],
+    )
+
     return Container(
         settings=settings,
         parser=parser,
@@ -252,6 +263,7 @@ def build_container(
         ingestion_service=ingestion_service,
         auth_service=auth_service,
         document_service=document_service,
+        rate_limiter=rate_limiter,
         source=source,
     )
 

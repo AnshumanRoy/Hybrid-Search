@@ -125,6 +125,13 @@ class UserRepository(Protocol):
 
     def user_exists_with_email(self, email: str) -> bool: ...
 
+    def increment_token_version(self, user_id: str) -> User | None:
+        """Bump the user's ``token_version`` (revokes all outstanding tokens).
+
+        Returns the updated user, or ``None`` if the user does not exist.
+        """
+        ...
+
 
 class LexicalRetriever(Protocol):
     """Lexical (BM25) retrieval over indexed chunk text."""

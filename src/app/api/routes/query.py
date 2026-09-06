@@ -6,7 +6,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from app.api.auth import get_current_user
+from app.api.auth import enforce_rate_limit, get_current_user
 from app.api.schemas import (
     CitationResponse,
     QueryRequest,
@@ -24,6 +24,7 @@ def query_endpoint(
     body: QueryRequest,
     request: Request,
     user: User = Depends(get_current_user),
+    _rate_limit: None = Depends(enforce_rate_limit),
 ) -> QueryResponse:
     container = request.app.state.container
     qid = uuid.uuid4().hex

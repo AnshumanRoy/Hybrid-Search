@@ -32,12 +32,18 @@ class SharingPermission(str, enum.Enum):
 
 
 class User(BaseModel):
-    """An authenticated principal who owns documents and shares them."""
+    """An authenticated principal who owns documents and shares them.
+
+    ``token_version`` is a per-user revocation counter. It is embedded in every
+    issued access token (``ver`` claim); bumping it invalidates every token ever
+    issued to this user (``POST /auth/revoke``).
+    """
 
     user_id: str = Field(default_factory=_new_id)
     email: str
     display_name: str | None = None
     created_at: datetime = Field(default_factory=utcnow)
+    token_version: int = 0
 
 
 class ShareRecord(BaseModel):

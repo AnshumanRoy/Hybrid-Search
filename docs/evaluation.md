@@ -6,7 +6,8 @@ configured — how faithfully the answer is grounded in that evidence.
 Entry points:
 
 - `python -m app evaluate [dataset] [--generate] [--top-k N]`
-- `python -m app.evaluation --dataset <path> [--generate] [--top-k N]`
+- `python -m app.evaluation --dataset <path> [--generate] [--top-k N] [--rewrite]
+  [--max-variants N] [--model NAME]`
 
 Both load the same dataset format; the second is the canonical module entrypoint.
 
@@ -71,12 +72,42 @@ context; context relevance compares the retrieved chunk ids against the ground-t
 are heuristic, deterministic implementations — plug in a stronger judge LLM by extending the
 metric functions without touching the runner.
 
+## A/B: query rewriting, backends, latency and cost
+
+`--rewrite` runs the multi-query expansion path (fan out over `--max-variants` rewritten queries,
+cross-variant RRF/weighted fusion). Without it the runner uses single-query retrieval, so the
+same dataset can be run twice to compare quality/latency before flipping
+`QUERY_REWRITE_ENABLED`. `--model` names an LLM registry entry (e.g. `echo`, `nemotron`) to
+benchmark generation backends against each other. The report embeds the configuration and
+per-question telemetry:
+
+```json
+{
+  "config": { "rewrite": true, "max_variants": 3, "model": null },
+  "retrieval": { "recall@5": 0.6, "...": 0.0 },
+  "latency_ms": { "retrieval": 41.2, "generation": 310.5, "total": 358.9 },
+  "retrieval_count_avg": 15.3,
+  "generation": { "faithfulness": 0.87, "answer_relevance": 0.6, "context_relevance": 0.7 },
+  "cost": { "provider_usage_reported": true,
+            "prompt_tokens_avg": 1800.0, "completion_tokens_avg": 220.0 }
+}
+```
+
+Latency comes from the RAG metadata timers; cost uses the provider-reported token `usage` when
+the backend exposes it (NIM does — echoed into `metadata.llm_usage`), otherwise a
+chars→tokens estimate (`context_chars/4`, `len(answer)/4`). All values are means over the
+dataset.
+
 ## As a regression gate
 
 The runner is a pure function of (dataset, container): `EvaluationRunner(container).run(dataset)`.
 Unit tests exercise the metric implementations directly; integration tests can pin a minimum
 `recall@10` / `mrr` on a fixed sample dataset. Because the metric computations are deterministic
 for a fixed index, the same dataset can be run after any retrieval change to compare regressions.
+Run the A/B pair — `--rewrite` off and on — and compare `recall@k` / `mrr`, `latency_ms` and
+`cost` before deciding whether rewriting earns its fan-out. Retrieval-only A/B works any time;
+for `--generate --rewrite` set `QUERY_REWRITE_ENABLED=true` so the RAG rewrite gate is open
+(otherwise `RAGService` degrades to single-query and logs a warning).
 
 ## Working with the bundled sample
 

@@ -218,7 +218,15 @@ class Settings(BaseSettings):
 
     # Auth
     auth_secret_key: str = "dev-only-change-me"
-    auth_token_ttl_seconds: int = Field(default=86_400, ge=1)
+    auth_token_ttl_seconds: int = Field(default=900, ge=1)
+
+    # Rate limiting (per-user, cost-bearing endpoints: /query, /rewrite). The
+    # limiter needs the shared cache backend; when it is unavailable it fails
+    # open (requests proceed) rather than breaking the API.
+    rate_limit_enabled: bool = True
+    rate_limit_window_seconds: int = Field(default=60, ge=1)
+    rate_limit_max_requests: int = Field(default=120, ge=1)
+    rate_limit_daily_max_requests: int = Field(default=2_000, ge=1)
 
     # Logging
     log_level: str = "INFO"

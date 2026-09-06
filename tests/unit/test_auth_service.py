@@ -73,3 +73,32 @@ def test_verify_token_rejects_removed_user(service) -> None:
     token = service.issue_token(User(user_id="nonexistent-id", email="ghost@example.com"))
     with pytest.raises(AuthenticationError):
         service.verify_token(token)
+
+
+def test_verify_token_rejects_revoked_token(service) -> None:
+    user = service.register("alice@example.com", "s3cure-pass")
+    token = service.issue_token(user)
+    assert service.verify_token(token) is not None
+    service.revoke_all_tokens(user.user_id)
+    with pytest.raises(AuthenticationError):
+        service.verify_token(token)
+
+
+def test_expired_token_survives_before_revoke_only(service) -> None:
+    user = service.register("alice@example.com", "s3cure-pass")
+    service.revoke_all_tokens(user.user_id)
+    result = service.authenticate("alice@example.com", "s3cure-pass")
+    assert service.verify_token(result.token) is not None
+
+
+def test_revoke_missing_user_raises(service) -> None:
+    with pytest.raises(AuthenticationError):
+        service.revoke_all_tokens("no-such-user")
+
+
+def test_refresh_issues_new_token_at_current_version(service) -> None:
+    user = service.register("alice@example.com", "s3cure-pass")
+    first = service.issue_token(user)
+    refreshed = service.issue_token(user)
+    assert first != refreshed
+    assert service.verify_token(refreshed) is not None

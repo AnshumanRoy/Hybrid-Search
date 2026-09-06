@@ -6,9 +6,10 @@ random salts, stored as ``pbkdf2_sha256$iterations$salt_b64$hash_b64``.
 Tokens: standard JWT compact serialization ``header.payload.signature`` with
 the JOSE header ``{"alg":"HS256","typ":"JWT"}``. The signature is an
 HMAC-SHA256 of the signing input (``header.payload``) under a shared secret;
-``exp`` is enforced on verify. ALGORITHM IS PINNED at ``HS256`` during
-verification regardless of what the header claims, so ``alg=none``-style
-confusion attacks are rejected out of the box.
+``exp`` is enforced on verify and a random ``jti`` is minted per token.
+ALGORITHM IS PINNED at ``HS256`` during verification regardless of what the
+header claims, so ``alg=none``-style confusion attacks are rejected out of the
+box.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 import time
 from typing import Any
 
@@ -80,6 +82,7 @@ def sign_token(
     _now: float | None = None,
 ) -> str:
     body: dict[str, Any] = dict(payload)
+    body["jti"] = secrets.token_hex(8)
     body["iat"] = int(_now if _now is not None else time.time())
     body["exp"] = body["iat"] + ttl_seconds
     header_b64 = _jose_header_b64()

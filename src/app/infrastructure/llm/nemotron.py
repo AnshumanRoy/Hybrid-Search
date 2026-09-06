@@ -91,6 +91,7 @@ class NIMClientBase(ABC):
         self._enable_thinking = bool(enable_thinking)
         self._transport = transport
         self._client = None
+        self.last_usage: dict | None = None
 
     @property
     def model_name(self) -> str:
@@ -137,6 +138,7 @@ class NIMClientBase(ABC):
                 retry_after = None
             else:
                 if response.status_code < 400:
+                    self._record_usage(response)
                     return self._extract_content(response)
                 if response.status_code not in _RETRYABLE_STATUS_CODES:
                     raise LLMError(self._error_message(response))
@@ -184,6 +186,14 @@ class NIMClientBase(ABC):
         if not self._api_key:
             return {}
         return {"Authorization": f"Bearer {self._api_key}"}
+
+    def _record_usage(self, response) -> None:
+        """Stash the last response's ``usage`` for cost observability (best-effort)."""
+        try:
+            usage = response.json().get("usage")
+        except ValueError:
+            usage = None
+        self.last_usage = usage if isinstance(usage, dict) else None
 
     def _extract_content(self, response) -> str:
         """Pull the assistant text out of a 2xx response (override if needed)."""

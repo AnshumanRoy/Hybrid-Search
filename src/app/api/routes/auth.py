@@ -48,3 +48,24 @@ def login(body: LoginRequest, request: Request) -> TokenResponse:
 @router.get("/me", response_model=UserResponse)
 def me(user: User = Depends(get_current_user)) -> UserResponse:
     return _user_response(user)
+
+
+@router.post("/refresh", response_model=TokenResponse)
+def refresh(request: Request, user: User = Depends(get_current_user)) -> TokenResponse:
+    """Issues a fresh access token for an already-authenticated user.
+
+    Rotates the access token without requiring re-login; the new token keeps
+    the current ``token_version`` unless the user has since been revoked.
+    """
+    token = request.app.state.container.auth_service.issue_token(user)
+    return TokenResponse(token=token, user=_user_response(user))
+
+
+@router.post("/revoke", status_code=204)
+def revoke(request: Request, user: User = Depends(get_current_user)) -> None:
+    """Revokes every token ever issued to the current user.
+
+    Bumps ``users.token_version``; every outstanding access token stops
+    verifying immediately, so this doubles as "log out everywhere".
+    """
+    request.app.state.container.auth_service.revoke_all_tokens(user.user_id)

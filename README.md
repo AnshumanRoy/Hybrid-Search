@@ -38,10 +38,11 @@ Most API endpoints require a user account (see [access control](docs/access_cont
   `model` on `/query` or the CLI `--model` flag. NIM clients share an abstract base so new
   models are thin subclasses.
 - **Multi-user documents** — user accounts (password hashing + signed bearer tokens, stdlib),
-  per-document ownership, **viewer/editor sharing**, document-level CRUD, and query scoping
-  so answers only cite documents you can see.
+  per-document ownership, **viewer/editor sharing**, document-level CRUD, query scoping
+  so answers only cite documents you can see, token revocation, and per-user rate limits.
 - **Evaluation harness** — retrieval metrics (recall/precision@K, MRR, nDCG) plus generation
-  metrics (faithfulness, answer/context relevance). 244 tests included (unit + integration).
+  metrics (faithfulness, answer/context relevance), with rewrite on/off A/B and latency/cost
+  telemetry. 261 tests included (unit + integration).
 - **API + CLI** — FastAPI (`/health`, `/query`, `/documents/ingest*`, `/documents`) and a CLI for
   `ingest`, `query`, and `evaluate`.
 - **Fail-soft design** — missing/offline reranker, LLM, or embedding model degrades gracefully
@@ -98,7 +99,7 @@ export RERANKER_ENABLED=false
 | --- | --- |
 | `python -m app ingest [path]` | Ingest every allowed file in `path`; defaults to `data/sample`. Prints per-file status (`indexed` / `skipped` / `failed`). |
 | `python -m app query "question" [--top-k N] [--model NAME]` | Run the full RAG pipeline and print the answer with citations and timing metadata. `--model` selects the LLM backend (`echo`/`ollama`/`nemotron`); defaults to `LLM_PROVIDER`; unknown names exit 1. |
-| `python -m app evaluate [dataset] [--generate] [--top-k N]` | Run retrieval (and optional generation) evaluation metrics against a dataset. |
+| `python -m app evaluate [dataset] [--generate] [--top-k N]` | Run retrieval (and optional generation) evaluation metrics against a dataset. Use `python -m app.evaluation --rewrite --max-variants N --model NAME` to benchmark multi-query expansion, latency, and token cost. |
 
 ## API
 
@@ -111,6 +112,8 @@ All endpoints except `/health`, `/auth/register`, and `/auth/login` require
 | POST | `/auth/register` | `{"email","password","display_name"?}` | `{token, user}` |
 | POST | `/auth/login` | `{"email","password"}` | `{token, user}` |
 | GET | `/auth/me` | — | `{user_id, email, display_name, created_at}` |
+| POST | `/auth/refresh` | — | `{token, user}` — new token, same `token_version`; invalidates nothing |
+| POST | `/auth/revoke` | — | `204` — bumps your `token_version`; every outstanding token stops working |
 | POST | `/query` | `{"query", "top_k", "model", "rewrite"?}` | `{answer, citations[], retrieved_chunks[], metadata{query_id, llm_model, retrieval_ms, generation_ms, rewritten_variants?, rewrite_strategy?}}` |
 | POST | `/rewrite` | `{"query", "strategy"?, "max_variants"?}` (auth required) | `{original, variants[], strategy}` |
 | POST | `/documents/ingest` | multipart `file` | `list[{document_id, filename, status, chunks_embedded, error, duration_ms}]` |
@@ -173,7 +176,11 @@ Settings are typed via pydantic-settings and read from `.env` / environment vari
 | `REWRITE_TIMEOUT_SECONDS` | `15.0` | Per-request timeout for the rewrite LLM call |
 | `DATA_DIR` | `<project>/data` | Root for ingested sources / sample data / runtime state |
 | `AUTH_SECRET_KEY` | `dev-only-change-me` | Token signing secret — set a long random value in deployment |
-| `AUTH_TOKEN_TTL_SECONDS` | `86400` | Bearer token lifetime |
+| `AUTH_TOKEN_TTL_SECONDS` | `900` | Access-token lifetime (seconds); re-issue via `/auth/refresh` |
+| `RATE_LIMIT_ENABLED` | `true` | Gate the per-user rate limiter on `/query` + `/rewrite` |
+| `RATE_LIMIT_WINDOW_SECONDS` | `60` | Burst window length |
+| `RATE_LIMIT_MAX_REQUESTS` | `120` | Max requests per user per burst window |
+| `RATE_LIMIT_DAILY_MAX_REQUESTS` | `2000` | Max requests per user per day |
 | `LOG_JSON` | `false` | Structured (JSON) logging |
 
 Settings also validate cross-field invariants (e.g. `chunk_overlap < chunk_size`, positive
@@ -195,7 +202,7 @@ src/app/
 ├── infrastructure/       # parsers, chunker, embedder, vector store, retrievers, reranker, llm, rewriters, persistence
 └── __main__.py           # CLI entrypoint
 data/                     # sample documents + evaluation dataset (runtime state lives here too)
-tests/                    # unit + integration suites (244 tests)
+tests/                    # unit + integration suites (261 tests)
 scripts/                  # sample data generation
 ```
 
@@ -213,7 +220,7 @@ Deeper dives:
 ## Testing
 
 ```bash
-python -m pytest -q          # full suite (244 tests)
+python -m pytest -q          # full suite (261 tests)
 python -m pytest tests/unit  -q
 python -m pytest tests/integration -q
 ```

@@ -22,6 +22,7 @@ class SQLAlchemyUserRepository(UserRepository):
                     email=email,
                     password_hash=password_hash,
                     display_name=display_name,
+                    token_version=user.token_version,
                     created_at=user.created_at,
                 )
             )
@@ -47,6 +48,15 @@ class SQLAlchemyUserRepository(UserRepository):
         with self._session_factory() as session:
             return session.query(UserRow).filter(UserRow.email == email.lower()).first() is not None
 
+    def increment_token_version(self, user_id: str) -> User | None:
+        with self._session_factory() as session:
+            row = session.get(UserRow, user_id)
+            if row is None:
+                return None
+            row.token_version += 1
+            session.commit()
+            return self._to_user(row)
+
     @staticmethod
     def _to_user(row: UserRow) -> User:
         return User(
@@ -54,4 +64,5 @@ class SQLAlchemyUserRepository(UserRepository):
             email=row.email,
             display_name=row.display_name,
             created_at=row.created_at,
+            token_version=row.token_version,
         )

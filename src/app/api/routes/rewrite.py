@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 
-from app.api.auth import get_current_user
+from app.api.auth import enforce_rate_limit, get_current_user
 from app.api.schemas import RewriteRequest, RewriteResponse
 from app.domain.entities import User
 
@@ -18,6 +18,7 @@ def rewrite_endpoint(
     body: RewriteRequest,
     request: Request,
     user: User = Depends(get_current_user),
+    _rate_limit: None = Depends(enforce_rate_limit),
 ) -> RewriteResponse:
     container = request.app.state.container
     result = container.rewrite_service.rewrite(

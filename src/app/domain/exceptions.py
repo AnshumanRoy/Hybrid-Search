@@ -102,3 +102,7 @@ class UserNotFoundError(RAGError):
 
 class PermissionDeniedError(RAGError):
     """The authenticated user lacks the required permission on a resource."""
+
+
+class RateLimitExceededError(RAGError):
+    """The authenticated user exceeded a per-user request/usage quota."""

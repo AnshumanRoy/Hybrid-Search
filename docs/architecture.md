@@ -8,51 +8,64 @@ root). Services hold references only to interfaces; all concrete wiring happens 
 ```
 ┌─────────────────────────────── delivery ───────────────────────────────┐
 │  api/routes/* (FastAPI)      __main__ (CLI)       bootstrap (wiring)   │
+│  auth deps (get_current_user, enforce_rate_limit)                      │
 └───────────────────────────────────────┬────────────────────────────────┘
                                         │ depends on
 ┌─────────────────────────────── application ────────────────────────────┐
 │  RAGService  RetrievalService  IngestionService  LLMService            │
 │  AuthService  DocumentService  ContextBuilder  PromptBuilder           │
+│  RewriteService  RateLimiter                                           │
 │  (orchestration, no framework imports)                                 │
 └───────────────────────────────────────┬────────────────────────────────┘
                                         │ depends on (all Protocols)
 ┌─────────────────────────────── domain ─────────────────────────────────┐
 │  entities / value_objects / exceptions                                  │
-│  interfaces.py     │            │              │                        │
+│  interfaces.py (incl. QueryRewriter, Cache)                             │
 └────────────────────┼────────────┼──────────────┼────────────────────────┘
                      ▼            ▼              ▼
 ┌─────────────────────────────── infrastructure ─────────────────────────┐
 │  DocumentParserRouter  Chunker  Embedder  VectorStore  BM25  Reranker   │
 │  SQLAlchemyRepository  SQLAlchemyUserRepository  IndexPersister        │
-│  ChromaVectorStore | PgVectorStore   LLM backends                      │
+│  ChromaVectorStore | PgVectorStore  CachingVectorStore                 │
+│  LLM backends (echo | ollama | nemotron)   rewriters (heuristic|llm)   │
+│  InMemoryCache | RedisCache  SingleFlight  IndexGeneration             │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Layering rules
 
 - **Domain** (`app/domain/`) — the vocabulary: `ParsedDocument`, `Chunk`, `EmbeddedChunk`,
-  `RetrievedChunk`, `Citation`, `RAGResponse`, `SearchFilters`, `ConfigurableFusion`; exceptions
-  hierarchy rooted at `RAGError`; and the `Protocol` interfaces every collaborator implements:
-  `DocumentParser`, `Chunker`, `Embedder`, `VectorStore`, `DocumentRepository`, `UserRepository`,
-  `LexicalRetriever`, `Persister`, `HybridSearch`, `Reranker`, `LLM`, `FileSource` (plus `Cache`
-  in `app/common/cache` for LLM caching). Application services depend only on these.
+  `RetrievedChunk`, `Citation`, `RAGResponse`, `SearchFilters`, `ConfigurableFusion`,
+  `RewrittenQuery`; exceptions hierarchy rooted at `RAGError`; and the `Protocol` interfaces every
+  collaborator implements: `DocumentParser`, `Chunker`, `Embedder`, `VectorStore`,
+  `DocumentRepository`, `UserRepository`, `LexicalRetriever`, `Persister`, `HybridSearch`,
+  `Reranker`, `LLM`, `QueryRewriter`, `FileSource` (plus the `Cache` protocol in
+  `app/common/cache`). Application services depend only on these.
 - **Application** (`app/application/`) — pure orchestration. Services receive interfaces and
   combination-config and never import a framework. This is where test doubles are also injected.
-  `AuthService` (registration/login/tokens) and `DocumentService` (ownership, CRUD, sharing)
-  sit alongside the RAG services; query access-control ids are pushed down into retrieval as
+  `AuthService` (registration/login/JWT issuance + per-user `token_version` revocation),
+  `DocumentService` (ownership, CRUD, sharing), `RewriteService` (strategy selection + fail-open
+  rewriter chain) and `RateLimiter` (per-user fixed-window cost guardrail) sit alongside the RAG
+  services; query access-control ids are pushed down into retrieval as
   `SearchFilters.document_ids` (post-filtering remains only as a defense-in-depth safety net).
 - **Infrastructure** (`app/infrastructure/`) — concrete adapters: PyMuPDF/Text parsers,
-  sentence-aware chunker, sentence-transformers embedder, Chroma vector store,
-  BM25Retriever/hybrid retrievers, cross-encoder reranker, SQLAlchemy persistence (`users`,
-  `documents.owner_id`, `document_shares`), echo/ollama/NIM (Nemotron) LLMs — NIM clients share
-  an abstract `NIMClientBase`.
-- **Cross-cutting config** — `ConfigurableFusion` (domain) carries only the fusion
+  sentence-aware chunker, sentence-transformers embedder, Chroma/PgVector vector stores,
+  `CachingVectorStore` wrapper (generation-keyed + stampede-safe), BM25Retriever/hybrid retrievers,
+  cross-encoder reranker, SQLAlchemy persistence (`users` incl. `token_version`, `documents.owner_id`,
+  `document_shares`), echo/ollama/NIM (Nemotron) LLMs — NIM clients share an abstract
+  `NIMClientBase` — and heuristic/LLM query rewriters.
+- **Cross-cutting config & caching** — `ConfigurableFusion` (domain) carries only the fusion
   strategy/weights; the RRF/weighted algorithm itself lives in `app/common/utils/fusion.py`
-  so the domain owns the config, not the math. `LLMService` wraps LLM calls in an
-  `InMemoryCache` (`Cache` protocol, `CACHE_ENABLED`/`CACHE_MAX_ENTRIES`) — in-memory only,
-  does not survive restarts.
-- **Delivery** — `api/` exposes REST endpoints; `__main__.py` exposes the CLI; `bootstrap.py`
-  is the single composition root.
+  so the domain owns the config, not the math. All caches speak one `Cache` protocol
+  (`get`/`set`/`delete`/`clear`) with two backends: bounded in-process `InMemoryCache` and
+  `RedisCache`. Backing store is chosen by `CACHE_BACKEND` (memory|redis) per `CACHE_ENABLED`,
+  applied to the LLM-response (`llm:`), rewrite (`rewrite:`) and rate-limit (`rl:`) namespaces.
+  `CachingVectorStore` is a separate opt-in layer with its own generation counter +
+  `SingleFlight` stampede protection. Tokens are standard HS256 JWTs (algorithm pinned on
+  verification) — see `docs/access_control.md`.
+- **Delivery** — `api/` exposes REST endpoints (auth dependencies resolve the JWT into a `User`
+  and, on `/query`+`/rewrite`, enforce the per-user rate limit); `__main__.py` exposes the CLI;
+  `bootstrap.py` is the single composition root.
 
 ## Dependency graph (runtime)
 
@@ -73,21 +86,25 @@ graph LR
     PB[PromptBuilder]
     AS[AuthService]
     DS[DocumentService]
+    RW[RewriteService]
+    RL[RateLimiter]
   end
 
   subgraph Infrastructure
     Parser[DocumentParserRouter]
     Chunk[Chunker]
     Emb[Embedder]
-    VS[ChromaVectorStore | PgVectorStore]
+    VS[VectorStore]
+    VC[CachingVectorStore]
     BM[BM25Retriever]
     H[HybridRetriever]
     RR[Reranker]
     DB[(SQLite | PostgreSQL + pgvector)]
-    USR[(users + document_shares)]
+    USR[(users + document_shares + token_version)]
     IP[IndexPersister]
-    LLM[LLM backend]
-    CACHE[InMemoryCache]
+    LLM[LLM backends: echo | ollama | nemotron]
+    RWR[rewriters: heuristic | llm]
+    CACHE[InMemoryCache | RedisCache]
   end
 
   Bootstrap --> Parser
@@ -99,6 +116,7 @@ graph LR
   Bootstrap --> USR
   Bootstrap --> RR
   Bootstrap --> LLM
+  Bootstrap --> CACHE
 
   IS --> Parser
   IS --> Chunk
@@ -109,16 +127,23 @@ graph LR
   IP --> VS
   IP --> BM
 
-  H --> VS
+  VC --> VS
+  H --> VC
   H --> Emb
   H --> BM
 
   RS --> H
   RS --> RR
+
   RAG --> RS
   RAG --> CB
   RAG --> PB
   RAG --> LS
+  RAG -->|opt. gate QUERY_REWRITE_ENABLED| RW
+
+  RW --> RWR
+  RW --> CACHE
+
   LS --> LLM
   LS --> CACHE
 
@@ -126,6 +151,10 @@ graph LR
   API --> IS
   API --> AS
   API --> DS
+  API --> RL
+  API --> RW
+  RL --> CACHE
+
   AS -->|UserRepository| USR
   DS -->|DocumentRepository| DB
   DS -->|UserRepository| USR
@@ -137,14 +166,16 @@ graph LR
 > **Access-control wiring**: the API route — not `RAGService` — calls
 > `DocumentService.accessible_document_ids(user)` and passes the set into
 > `RAGService.answer()`, which forwards it to retrieval as `SearchFilters.document_ids`.
-> The sequence diagram below is the authoritative contract.
+> The `user` comes from a verified HS256 JWT — the `sub` claim is looked up in the user
+> store and the token's `ver` claim must equal the user's `token_version` (revocation).
+> The sequence diagrams below are the authoritative contracts.
 
-## Request/response flow
+## Request/response flow (single query)
 
 ```mermaid
 sequenceDiagram
     participant C as Client
-    participant A as API route (auth)
+    participant A as API route (auth + rate limit)
     participant D as DocumentService
     participant RAG as RAGService
     participant RS as RetrievalService
@@ -156,7 +187,8 @@ sequenceDiagram
     participant LS as LLMService
     participant L as LLM
 
-    C->>A: POST /query (Bearer token)
+    C->>A: POST /query (Bearer JWT)
+    A->>A: verify JWT (HS256, sub, ver, exp)
     A->>D: accessible_document_ids(user)
     D->>A: ids user can see (own + shared + public)
     A->>RAG: answer(query, accessible_document_ids)
@@ -182,6 +214,23 @@ sequenceDiagram
     RAG->>A: RAGResponse(answer, citations, metadata)
     A->>C: JSON (answer, citations, retrieved_chunks)
 ```
+
+## Request/response flow (query rewriting enabled)
+
+```
+Client → API route (auth + rate limit)
+  → RAGService.answer(query, rewrite=True) — gate: QUERY_REWRITE_ENABLED or per-request override
+  → RewriteService.rewrite(query) → one RewrittenQuery with N variants
+       (LLM rewriter → heuristic fallback → passthrough; strategy is recorded)
+  → RetrievalService.retrieve_multi(rewritten, filters)
+       fan out: for each variant → HybridRetriever.search(variant, SAME SearchFilters)
+       merge variants (RRF / weighted)
+       rerank merged candidates → dedupe
+  → ContextBuilder → LLMService.generate → RAGResponse(metadata.rewritten_variants,
+       metadata.rewrite_strategy) → JSON response
+```
+Access control is identical to the single-query flow: the **same** resolved
+`SearchFilters.document_ids` reach every variant, and the post-filter safety net still runs.
 
 ## Ingestion flow
 
@@ -223,10 +272,11 @@ sequenceDiagram
 llm=None, llm_providers=None)` accepts injected doubles for the three heavy pieces (embedder,
 vector store, LLM); `llm_providers` overlays the `name → LLM` registry (used by tests to
 inject a fake backend without touching the network). Integration tests inject
-`FakeEmbedder`/real Chroma; the `echo` LLM keeps the whole pipeline offline-testable. Every
-service can also be constructed directly with fakes for unit tests —
-there are no hidden globals or module-level singletons inside components (only
-`get_settings()` exists at the composition root).
+`FakeEmbedder`/real Chroma; the `echo` LLM keeps the whole pipeline offline-testable. The
+general cache (`llm:`/`rewrite:`/`rl:` namespaces) defaults to `InMemoryCache`; rate limiting
+is on by default but no-ops when the cache is disabled/unavailable. Every service can also be
+constructed directly with fakes for unit tests — there are no hidden globals or module-level
+singletons inside components (only `get_settings()` exists at the composition root).
 
 The default test/CI run exercises the **Chroma** backend end-to-end; the pgvector vector store
 is covered by `tests/integration/test_pgvector.py`, which is skipped unless

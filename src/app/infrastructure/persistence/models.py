@@ -44,6 +44,7 @@ class UserRow(Base):
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(512))
     display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    token_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     documents: Mapped[list["DocumentRow"]] = relationship(back_populates="owner")
@@ -115,11 +116,13 @@ def init_db(engine) -> None:
     """Create all tables and apply lightweight schema upgrades.
 
     ``Base.metadata.create_all`` never alters existing tables, so schema
-    additions (e.g. ``documents.owner_id``) are applied with portable
-    ``ALTER TABLE`` statements for databases created before the change.
+    additions (e.g. ``documents.owner_id``, ``users.token_version``) are
+    applied with portable ``ALTER TABLE`` statements for databases created
+    before the change.
     """
     Base.metadata.create_all(engine)
     _upgrade_documents_owner_id(engine)
+    _upgrade_users_token_version(engine)
 
 
 def _upgrade_documents_owner_id(engine) -> None:
@@ -131,6 +134,18 @@ def _upgrade_documents_owner_id(engine) -> None:
     with engine.begin() as conn:
         # Plain nullable column (no FK) so both sqlite and postgres accept it.
         conn.execute(text("ALTER TABLE documents ADD COLUMN owner_id VARCHAR(64)"))
+
+
+def _upgrade_users_token_version(engine) -> None:
+    from sqlalchemy import inspect, text
+
+    if "users" not in inspect(engine).get_table_names():
+        return
+    columns = {c["name"] for c in inspect(engine).get_columns("users")}
+    if "token_version" in columns:
+        return
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0"))
 
 
 def session_factory_for(engine) -> sessionmaker:

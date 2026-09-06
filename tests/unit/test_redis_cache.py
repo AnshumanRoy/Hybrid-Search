@@ -17,7 +17,9 @@ import pytest
 from app.common.cache.generation import RedisIndexGeneration
 from app.common.cache.redis import RedisCache
 from app.common.cache.single_flight import RedisSingleFlight
+from app.application.services.rate_limiting import RateLimiter
 from app.application.services.rewrite import RewriteService
+from app.domain.exceptions import RateLimitExceededError
 from app.domain.value_objects import RewrittenQuery
 from app.infrastructure.rewriters.heuristic import HeuristicQueryRewriter
 
@@ -119,3 +121,42 @@ def test_rewrite_service_roundtrips_via_redis(client) -> None:
     assert second == first
     assert rewriter.calls == 1  # second call was a cache hit
     assert isinstance(second, RewrittenQuery)
+
+
+def test_redis_rate_limiter_blocks_at_capacity_and_isolates_users(client) -> None:
+    limiter = RateLimiter(RedisCache(client, prefix="rl:", ttl_seconds=300), windows=[(3600, 2)])
+    limiter.consume("user-a")
+    limiter.consume("user-a")
+    with pytest.raises(RateLimitExceededError):
+        limiter.consume("user-a")
+
+    # The counters really live in Redis under the rl: namespace.
+    assert any(k.startswith("rl:") for k in client.keys("rl:*"))
+
+    # A different user is unaffected.
+    limiter.consume("user-b")
+    limiter.consume("user-b")
+
+
+def test_redis_rate_limiter_resets_when_window_rolls_over(client) -> None:
+    import time
+
+    limiter = RateLimiter(RedisCache(client, prefix="rl:", ttl_seconds=300), windows=[(1, 1)])
+    limiter.consume("user-a")
+    with pytest.raises(RateLimitExceededError):
+        limiter.consume("user-a")  # same 1s bucket, at capacity
+    time.sleep(1.1)  # next second: fresh bucket
+    limiter.consume("user-a")
+
+
+def test_redis_rate_limiter_fails_open_when_redis_errors() -> None:
+    class FailingCache:
+        def get(self, key: str) -> None:
+            raise ConnectionError("simulated redis outage mid-flight")
+
+        def set(self, key: str, value: object, ttl_seconds: int | None = None) -> None:
+            raise ConnectionError("simulated redis outage mid-flight")
+
+    limiter = RateLimiter(FailingCache(), windows=[(60, 1)])
+    for _ in range(5):
+        limiter.consume("user-a")  # cache errors must never take the API down
